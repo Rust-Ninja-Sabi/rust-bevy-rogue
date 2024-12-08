@@ -1,7 +1,7 @@
 use petgraph::graph::{Graph, NodeIndex};
 use rand::Rng;
 
-use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemTyp};
+use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType};
 
 
 
@@ -713,8 +713,14 @@ fn add_items(grid: &Grid, rooms: &Vec<Room>,items_per_room:usize) -> Vec<ItemInM
         for _ in 0..items_per_room {
             let position = (rng.gen_range(room.x1+1..room.x2),
                             rng.gen_range(room.y1+1..room.y2));
+            let item_type = if rng.gen::<f32>() < 0.7 {
+                ItemType::HealPotion
+            } else {
+                ItemType::Lightning
+            };
+
             items.push(ItemInMap{
-                item_type: ItemTyp::HealPotion,
+                item_type: ItemType::HealPotion,
                 position
             })
         }

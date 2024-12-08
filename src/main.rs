@@ -6,15 +6,16 @@ use bevy::input::common_conditions::input_toggle_active;
 use bevy_egui::EguiPlugin;
 use rand::Rng;
 use std::f32::consts::PI;
-
+use bevy::utils::HashMap;
 use bimap::BiMap;
+
 
 use orbitcamera::{OrbitCameraPlugin,OrbitCamera};
 use third_person_camera::ThirdPersonCameraPlugin;
 use dungeon_lighting::{DungeonLightingPlugin,place_torch_lights};
 use crate::third_person_camera::ThirdPersonCamera;
 use crate::create_dungeon::{StringMapGenerator, DungeonGeneratorStrategy, MapGeneratorStart};
-use crate::fighting::{FightingPlugin, Actor, AttackEvent};
+use crate::fighting::{FightingPlugin, Actor, AttackEvent, DamageEvent};
 use crate::chracter_controller::{MonsterAIPlugin,MonsterAIState};
 use crate::ui::{HeadUpDisplay, UiPlugin};
 
@@ -126,15 +127,25 @@ impl std::ops::IndexMut<(usize, usize)> for Grid {
     }
 }
 
-#[derive(Debug)]
-enum ItemTyp {
-    HealPotion
+#[derive(Debug,PartialEq,Eq, Hash, Copy, Clone)]
+enum ItemType {
+    HealPotion,
+    Lightning
+}
+
+impl ItemType {
+    fn to_string(&self) -> String {
+        match self {
+            ItemType::HealPotion => String::from("HealPotion"),
+            ItemType::Lightning => String::from("Lightning")
+        }
+    }
 }
 
 #[derive(Debug)]
 struct ItemInMap{
     position: (usize, usize),
-    item_type: ItemTyp
+    item_type: ItemType
 }
 
 #[derive(Debug)]
@@ -147,6 +158,82 @@ enum MonsterType {
 struct MonsterInMap{
     position: (usize, usize),
     monster_type: MonsterType
+}
+
+#[derive(Debug, Resource)]
+struct ShowFps(bool);
+
+#[derive(Debug, Resource)]
+struct Inventory{
+    heal_potion: usize,
+    items:HashMap<ItemType, usize>,
+    item_keys:Vec<ItemType>,
+    activ_item:Option<usize>
+}
+
+impl Inventory {
+    fn new() -> Self {
+        Inventory{
+            heal_potion: 0,
+            item_keys:Vec::new(),
+            items:HashMap::new(),
+            activ_item: None
+        }
+    }
+
+    fn add_item(&mut self, item_type: ItemType) {
+        if item_type == ItemType::HealPotion {
+            self.heal_potion += 1;
+        } else {
+            let item_length = self.items.len();
+            *self.items.entry(item_type).or_insert(0) += 1;
+            if item_length < self.items.len() {
+                self.item_keys.push(item_type);
+                if self.activ_item == None {
+                    self.activ_item = Some(0);
+                }
+            }
+        }
+    }
+
+    fn remove_item(&mut self, item_type: ItemType) {
+        if self.heal_potion > 0 {
+            self.heal_potion -=1;
+        }
+        else {
+            if let Some(value) = self.items.get_mut(&item_type) {
+                if *value > 1 {
+                    *value -= 1;
+                } else {
+                    self.items.remove(&item_type);
+                    if let Some(index) = self.item_keys.iter().position(|&key| key == item_type) {
+                        self.item_keys.remove(index);
+                        if let Some(active_index) = self.activ_item {
+                            if active_index == index {
+                                if self.items.len() == 0 {
+                                    self.activ_item = None;
+                                } else {
+                                    if active_index > self.items.len()-1 {
+                                        self.activ_item = Some(0)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn get_active_item_name(&self) -> String {
+        match self.activ_item {
+            Some(value) => {
+                let item_type = self.item_keys[value];
+                let sum =  self.items[&item_type];
+                format!("{} {}", item_type.to_string(), sum)
+            },
+            None => "nothing active".to_string()
+        }
+    }
 }
 
 #[derive(Debug, Resource)]
@@ -226,6 +313,25 @@ Compiler optimizations possible
         let x = ((position.x+0.5*TILE_SIZE) / TILE_SIZE + self.center.0 as f32) as usize;
         let y = ((position.z+0.5*TILE_SIZE) / TILE_SIZE + self.center.1 as f32) as usize;
         (x, y)
+    }
+
+    fn collide_with_wall(&self, position:Vec3, distance:f32)->bool{
+        let directions = vec![
+            Vec3::new(0.0,0.0,-distance),
+            Vec3::new(0.0,0.0,distance),
+            Vec3::new(distance,0.0,0.0),
+            Vec3::new(-distance,0.0,0.0),
+        ];
+
+        for i in directions {
+            let new_position = position + i;
+            let map_up =  self.world_to_grid(new_position);
+            if self.grid[map_up].tile_type == TileType::Wall {
+                return true
+            }
+        }
+
+        false
     }
 
     fn generate(
@@ -355,6 +461,21 @@ struct AttackTimer(Timer);
 struct Monster;
 
 #[derive(Component)]
+struct Item{
+    item_type: ItemType
+}
+
+#[derive(Component)]
+struct ThrowableBall;
+
+
+#[derive(Component)]
+struct ThrownBall {
+    velocity: Vec3,
+    lifetime: Timer,
+}
+
+#[derive(Component)]
 struct MainCamera;
 
 fn main() {
@@ -378,7 +499,7 @@ fn main() {
             // Adds frame time diagnostics
             FrameTimeDiagnosticsPlugin,
             // Adds a system that prints diagnostics to the console
-            LogDiagnosticsPlugin::default(),
+            //LogDiagnosticsPlugin::default(),
             // Any plugin can register diagnostics. Uncomment this to add an entity count diagnostics:
             // bevy::diagnostic::EntityCountDiagnosticsPlugin::default(),
             // Uncomment this to add an asset count diagnostics:
@@ -387,9 +508,15 @@ fn main() {
             // bevy::diagnostic::SystemInformationDiagnosticsPlugin::default()
         ))
         .add_systems(Startup, (setup_orbitcamera, setup))
+        .insert_resource(Inventory::new())
+        .insert_resource(ShowFps(false))
         //.add_systems(Startup, place_torch_lights)
         .add_systems(Update, debug)
-        .add_systems(Update, move_player)
+        .add_systems(Update,move_player)
+        .add_systems(Update,player_item_colliding)
+        .add_systems(Update,player_use_item)
+        .add_systems(Update,throw_ball)
+        .add_systems(Update,update_thrown_ball)
         .run();
 }
 
@@ -649,13 +776,28 @@ fn setup_character(
         ));
 
         // Left Arm
-        parent.spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3))),
-            material: materials.add(character.color),
-            transform: Transform::from_xyz(-0.7, 0.2, 0.0)
-                .with_rotation(Quat::from_rotation_x(0.0)),
-            ..default()
-        }).insert(Name::new("player-left-arm"));
+        parent.spawn((
+            PbrBundle {
+                mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3))),
+                material: materials.add(character.color),
+                transform: Transform::from_xyz(-0.7, 0.2, 0.0)
+                    .with_rotation(Quat::from_rotation_x(0.0)),
+                ..default()
+            },
+            Name::new("player-left-arm")
+        )).with_children(|arm| {
+            // Wurfkugel an der linken Hand
+            arm.spawn((
+                PbrBundle {
+                    mesh: meshes.add(Mesh::from(Sphere::new(0.2))),
+                    material: materials.add(Color::srgb(0.8, 0.3, 0.3)), // Rote Kugel
+                    transform: Transform::from_xyz(0.0, -0.5, 0.2),
+                    ..default()
+                },
+                ThrowableBall,
+                Name::new("player-throwball")
+            ));
+        });
 
         // Right Arm with Sword (two components)
         parent.spawn((
@@ -690,13 +832,14 @@ fn setup_item(
     game_map: &mut GameMap
 ) {
     let heal_portion_handle:Handle<Scene> = asset_server.load("models/bottle_A_brown.gltf#Scene0");
+    let trunk_handle:Handle<Scene> = asset_server.load("models/trunk_small_A.gltf#Scene0");
 
     for i in game_map.items.iter() {
 
         let position = game_map.grid_to_world(i.position.0, i.position.1);
         match i.item_type {
-            ItemTyp::HealPotion => {
-               commands.spawn(SceneBundle {
+            ItemType::HealPotion => {
+               commands.spawn((SceneBundle {
                    scene: heal_portion_handle.clone(),
                    transform:Transform {
                        translation:  Vec3::new(position.x,0.0,position.z),
@@ -704,7 +847,22 @@ fn setup_item(
                        ..default()
                    },
                    ..Default::default()
-               });
+               },
+                   Item{item_type: ItemType::HealPotion}
+               ));
+            }
+            ItemType::Lightning => {
+                commands.spawn((SceneBundle {
+                    scene: trunk_handle.clone(),
+                    transform:Transform {
+                    translation:  Vec3::new(position.x,0.0,position.z),
+                    //rotation: Quat::from_rotation_y(PI/2.0),
+                    ..default()
+                },
+                ..Default::default()
+                },
+                    Item{item_type: ItemType::HealPotion}
+                ));
             }
         }
     }
@@ -731,6 +889,7 @@ fn setup_orbitcamera(
 
 fn debug(
     keyboard_input:Res<ButtonInput<KeyCode>>,
+    mut show_fps: ResMut<ShowFps>,
     mut query: Query<&mut Camera>
 )
 {
@@ -738,8 +897,11 @@ fn debug(
         for mut camera in query.iter_mut() {
             camera.is_active = ! camera.is_active
         }
+    } else if keyboard_input.just_pressed(KeyCode::KeyF) {
+        show_fps.0 = !show_fps.0;
     };
 }
+
 
 const SPEED:f32 = 2.0;
 
@@ -868,4 +1030,137 @@ fn player_without_colliding(
     }
 
     new_position
+}
+
+fn player_item_colliding(
+    mut commands: Commands,
+    mut inventory: ResMut<Inventory>,
+    player_query: Query<(&Transform), (With<Player>, Changed<Transform>)>,
+    mut item_query: Query<(Entity, &Item, &Transform), (With<Item>, Without<Player>)>
+) {
+    for (player_transform) in player_query.iter() {
+        for (item_entity, item, item_transform) in item_query.iter_mut() {
+            if player_transform.translation.distance(item_transform.translation) <= PLAYER_DISTANCE *2.0 {
+                inventory.add_item(item.item_type.clone());
+                commands.entity(item_entity).despawn_recursive();
+            }
+        }
+    }
+}
+
+fn player_use_item(
+    keyboard_input:Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut Actor, With<Player>>,
+    mut inventory: ResMut<Inventory>,
+)
+{
+    //Portion
+    if keyboard_input.just_pressed(KeyCode::KeyP) {
+        if inventory.heal_potion > 0 {
+            for mut actor in query.iter_mut() {
+                if actor.hit_points < actor.max_hit_points {
+                    inventory.remove_item(ItemType::HealPotion);
+                    actor.hit_points = actor.max_hit_points.min(actor.hit_points+20);
+                }
+            }
+        }
+    };
+}
+
+const BALL_TEMPO:f32=8.0;
+const BALL_RADIUS:f32=0.2;
+
+fn throw_ball(
+    mut commands: Commands,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    player_query: Query<&Transform, (With<Player>, Without<ThrownBall>)>,
+    throwball_query: Query<(Entity, &GlobalTransform), (With<ThrowableBall>, Without<ThrownBall>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::KeyX) {
+        if let Ok(player_transform) = player_query.get_single() {
+            if let Ok((ball_entity, ball_global_transform)) = throwball_query.get_single() {
+
+                // Determine throw direction based on player orientation
+                let mut throw_direction = player_transform.forward().as_vec3().normalize();
+                throw_direction.y = 0.0;
+
+                // Calculate start position using the global transformation of the ball
+                let start_position = ball_global_transform.translation();
+
+                // Remove the ball from the player
+                commands.entity(ball_entity).despawn_recursive();
+
+                // Spawn a new independent ball at the saved global position
+                commands.spawn((
+                    PbrBundle {
+                        mesh: meshes.add(Mesh::from(Sphere::new(BALL_RADIUS))),
+                        material: materials.add(Color::srgb(0.8, 0.3, 0.3)), // Rote Kugel
+                        transform: Transform::from_translation(start_position),
+                        ..default()
+                    },
+                    ThrownBall {
+                        velocity: throw_direction * BALL_TEMPO,  // Throw velocity
+                        lifetime: Timer::from_seconds(2.0, TimerMode::Once)
+                    }
+                ));
+            }
+        }
+    }
+}
+
+
+const BALL_GRAVITY: f32 = 2.40665;
+
+fn update_thrown_ball(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut ball_query: Query<(Entity, &mut Transform, &mut ThrownBall),(Without<Monster>)>,
+    monster_query: Query<(Entity, &Transform), (With<Monster>)>,
+    mut damage_events: EventWriter<DamageEvent>,
+    game_map: Res<GameMap>, // Game world information for collision detection
+) {
+    let delta_time = time.delta_seconds();
+
+    for (entity, mut transform, mut ball) in ball_query.iter_mut() {
+        // Update position: The ball moves in its direction with a given speed
+        ball.velocity.y -= BALL_GRAVITY * delta_time; // Gravity pulls the ball downward
+        transform.translation += ball.velocity * delta_time;
+
+        // Reduce the lifetime of the ball
+        ball.lifetime.tick(time.delta());
+        if ball.lifetime.finished() {
+            commands.entity(entity).despawn(); // Remove the ball when its lifetime expires
+            continue;
+        }
+
+        //floor or wall
+        if transform.translation.y < 0.0  ||
+            game_map.collide_with_wall(transform.translation, BALL_RADIUS) {
+            commands.entity(entity).despawn_recursive();
+        } else if let Some(monster) = collide_with_monster(transform.translation,BALL_RADIUS,
+                                                           &monster_query) {
+            damage_events.send(DamageEvent {
+                attacker: entity,
+                target: monster,
+                fixed_damage: 10
+            });
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+fn collide_with_monster(
+    position:Vec3,
+    distance:f32,
+    monster_query: &Query<(Entity, &Transform), (With<Monster>)>
+)->Option<Entity>{
+
+    for (monster,i) in monster_query.iter() {
+        if position.distance(i.translation) <= distance {
+            return Some(monster);
+        }
+    }
+    None
 }

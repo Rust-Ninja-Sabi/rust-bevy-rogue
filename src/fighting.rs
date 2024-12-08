@@ -56,7 +56,8 @@ pub struct AttackEvent {
 #[derive(Event)]
 pub struct DamageEvent {
     pub attacker: Entity,
-    pub target: Entity
+    pub target: Entity,
+    pub fixed_damage: usize
 }
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
@@ -112,7 +113,8 @@ fn handle_attacks(
                     if actor_transform.translation.distance(attacker_transform.translation) <= ATTACK_DISTANCE {
                         damage_events.send(DamageEvent {
                             attacker: attacker,
-                            target: actor
+                            target: actor,
+                            fixed_damage: 0
                         });
                         break;
                     }
@@ -157,36 +159,46 @@ fn process_damage(
     mut actors: Query<(Entity, &mut Actor, &Name, Option<&mut MonsterAIState>)>
 ) {
     for event in damage_events.read() {
-        // Explicitly clone the data here
-        let Ok((_attacker_entity, attacker, attacker_name, _)) = actors.get(event.attacker) else { continue };
-        let attacker_power = attacker.power; // Clone of power
-        let attacker_name_clone = attacker_name.clone(); // Clone of name
 
-        let Ok((target_entity, mut target, target_name, mut monster_ai_state)) = actors.get_mut(event.target) else { continue };
-
-        let damage = if target.defense < attacker_power {
-            attacker_power - target.defense
+        let attacker_power = if event.fixed_damage == 0 {
+            let Ok((_attacker_entity, attacker, attacker_name, _)) = actors.get(event.attacker) else { continue };
+            attacker.power
         } else {
             0
         };
 
-        println!("{} attacks {} with damage {}", attacker_name_clone, target_name, damage);
+        let Ok((target_entity,
+                   mut target,
+                   target_name,
+                   mut monster_ai_state)) = actors.get_mut(event.target) else { continue };
 
-        let new_hit_points:i32 = target.hit_points as i32 - damage as i32;
-
-        if target.hit_points <= 0 {
-            let player = player_query.single();
-
-            if player == target_entity {
-
+        let Some(ai_state) = &mut monster_ai_state else { continue };
+        if **ai_state != MonsterAIState::Fading {
+            let damage = if event.fixed_damage > 0 {
+                event.fixed_damage
             } else {
-                println!("added fading");
-                commands.entity(target_entity).insert(Fading::new());
-                let Some(ai_state) = &mut monster_ai_state else { continue };
-                **ai_state = MonsterAIState::Fading;
+                if target.defense < attacker_power {
+                    attacker_power - target.defense
+                } else {
+                    0
+                }
+            };
+
+            let new_hit_points:i32 = target.hit_points as i32 - damage as i32;
+
+            if new_hit_points <= 0 {
+                let player = player_query.single();
+
+                if player == target_entity {
+
+                } else {
+                    println!("added fading");
+                    commands.entity(target_entity).insert(Fading::new());
+                    **ai_state = MonsterAIState::Fading;
+                }
+            } else {
+                target.hit_points = new_hit_points as usize;
             }
-        } else {
-            target.hit_points = new_hit_points as usize;
         }
     }
 }
