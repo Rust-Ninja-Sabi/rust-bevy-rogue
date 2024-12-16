@@ -81,7 +81,7 @@ impl Plugin for FightingPlugin {
                 update_healthbar_visibility,
                 render_healthbars,
                 update_config_gizmo
-            ).chain());;
+            ).chain());
     }
 }
 
@@ -172,8 +172,17 @@ fn process_damage(
                    target_name,
                    mut monster_ai_state)) = actors.get_mut(event.target) else { continue };
 
-        let Some(ai_state) = &mut monster_ai_state else { continue };
-        if **ai_state != MonsterAIState::Fading {
+        println!("target {}", target_name);
+
+        let mut fight = true;
+
+        if let Some( ref ai_state) = monster_ai_state {
+            if **ai_state == MonsterAIState::Fading {
+                fight = false;
+            };
+        };
+
+        if fight {
             let damage = if event.fixed_damage > 0 {
                 event.fixed_damage
             } else {
@@ -194,7 +203,9 @@ fn process_damage(
                 } else {
                     println!("added fading");
                     commands.entity(target_entity).insert(Fading::new());
-                    **ai_state = MonsterAIState::Fading;
+                    if let Some(ref mut ai_state) = monster_ai_state {
+                        **ai_state = MonsterAIState::Fading;
+                    } ;
                 }
             } else {
                 target.hit_points = new_hit_points as usize;
@@ -206,7 +217,7 @@ fn process_damage(
 fn fade_out_monsters(
     mut commands: Commands,
     time: Res<Time>,
-    mut query: Query<(Entity, &mut Fading, &mut Handle<StandardMaterial>), With<Monster>>,
+    mut query: Query<(Entity, &mut Fading, &mut MeshMaterial3d<StandardMaterial>), With<Monster>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, mut fading, material_handle) in query.iter_mut() {

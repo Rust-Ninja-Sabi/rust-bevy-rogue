@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use crate::{GameMap, Player, Monster, AttackEvent, TileType};
 
-#[derive(Component, PartialEq, Debug)]
+#[derive(Component, PartialEq, Debug, Clone, Copy)]
 pub enum MonsterAIState {
     Idle,
     Pursuing,
@@ -26,7 +26,7 @@ const ATTACK_RANGE: f32 = 2.0;
 const VISION_RANGE: f32 = 10.0;
 
 fn update_monster_ai(
-    mut commands: Commands,
+    commands: Commands,
     player_query: Query<&Transform, (With<Player>,Without<Monster>)>,
     mut monster_query: Query<(Entity, &Transform, &mut MonsterAIState), (With<Monster>,Without<Player>)>,
     game_map: Res<GameMap>
@@ -100,7 +100,7 @@ fn monster_movement(
             MonsterAIState::Pursuing => {
                 // Move towards player
                 let direction = (player_transform.translation - monster_transform.translation).normalize();
-                let movement = direction * MONSTER_SPEED * time.delta_seconds();
+                let movement = direction * MONSTER_SPEED * time.delta_secs();
 
                 let new_position = monster_without_colliding(
                     &game_map,

@@ -52,16 +52,15 @@ fn setup_ambient_lighting(mut commands: Commands) {
     });
 
     // Add a subtle global directional light for depth
-    commands.spawn(DirectionalLightBundle {
-        directional_light: DirectionalLight {
+    commands.spawn((
+        DirectionalLight {
             illuminance: 500.0,
             color: Color::srgba(0.8, 0.8, 1.0, 0.2),
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_xyz(-2.0, 10.0, -2.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ..default()
-    });
+        Transform::from_xyz(-2.0, 10.0, -2.0).looking_at(Vec3::ZERO, Vec3::Y)
+    ));
 }
 
 fn setup_player_light(
@@ -71,10 +70,7 @@ fn setup_player_light(
     if let Ok(player_entity) = player_query.get_single() {
         commands.entity(player_entity).with_children(|parent| {
             parent.spawn((
-                             SpotLightBundle {
-                                 transform: Transform::from_xyz(0.0, 4.0, 0.0)
-                                     .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::X),
-                                 spot_light: SpotLight {
+                             SpotLight {
                                      intensity: 240_000.0, // lumens
                                      color: Color::WHITE,
                                      shadows_enabled: false,
@@ -84,10 +80,10 @@ fn setup_player_light(
                                      outer_angle: PI / 2.0,
                                      ..default()
                                  },
-                                 ..default()
-                             },
+                         Transform::from_xyz(0.0, 4.0, 0.0)
+                                .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::X),
                              PlayerLight
-            )).insert(Name::new("PlayerLight"));;
+            )).insert(Name::new("PlayerLight"));
         });
     }
 }
@@ -118,17 +114,14 @@ pub fn place_torch_lights(
                             let position = game_map.grid_to_world(*adj_x as usize, *adj_y as usize);
 
                             commands.spawn((
-                                PointLightBundle {
-                                    point_light: PointLight {
+                                 PointLight {
                                         intensity: TORCH_BASE_INTENSITY,
                                         range: TORCH_RANGE,
                                         color: TORCH_COLOR,
                                         shadows_enabled: true,
                                         ..default()
                                     },
-                                    transform: Transform::from_translation(position + Vec3::Y * 2.0),
-                                    ..default()
-                                },
+                                 Transform::from_translation(position + Vec3::Y * 2.0),
                                 DungeonLightType::Torch,
                             ));
                         }
@@ -147,7 +140,7 @@ fn torch_flickering(
 ) {
     for mut light in torch_lights.iter_mut() {
         // Sine wave to create natural flickering
-        let flicker = (time.elapsed_seconds() * TORCH_FLICKER_SPEED).sin() * TORCH_FLICKER_INTENSITY;
+        let flicker = (time.elapsed_secs() * TORCH_FLICKER_SPEED).sin() * TORCH_FLICKER_INTENSITY;
         light.intensity = TORCH_BASE_INTENSITY + flicker;
     }
 }

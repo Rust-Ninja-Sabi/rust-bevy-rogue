@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
+use crate::{GameMap, Player, PLAYER_BODY_LENGTH, PLAYER_BODY_RADIUS};
 
 #[derive(Component, Default, Clone)]
 pub enum CameraMode {
@@ -76,14 +77,22 @@ impl Default for ThirdPersonCamera {
     }
 }
 
+#[derive(Component)]
+struct GhostCamera{}
+
+#[derive(Component)]
+struct PlayerGhost{}
+
 pub struct ThirdPersonCameraPlugin;
 
 impl Plugin for ThirdPersonCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PostStartup, setup_camera)
+            .add_systems(PostStartup,setup_player_ghost)
             .add_systems(Update, (
                 update_camera_rotation_keyboard,
-                update_camera_position
+                update_camera_position,
+                show_player_ghost
             ));
     }
 }
@@ -95,16 +104,52 @@ fn setup_camera(
     let player_transform = player_query.single();
 
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_xyz(
+            Camera3d::default(),
+        Msaa::Sample4,
+            Camera{
+                order: 0,
+                ..Default::default()
+            },
+             Transform::from_xyz(
                 player_transform.translation.x,
                 player_transform.translation.y + 1.0,
                 player_transform.translation.z + 10.0
             ).looking_at(player_transform.translation, Vec3::Y),
-            ..default()
-        },
         RenderLayers::layer(0),
         ThirdPersonCamera::new(10.0),
+    )).with_children(|parent| {
+        parent.spawn((
+            Camera3d::default(),
+            Camera{
+                    order: 1,
+                    clear_color: ClearColorConfig::None,
+                    ..Default::default()
+                },
+            RenderLayers::layer(1),
+            GhostCamera{},
+            Name::new("ghost-camera")
+            ));
+    });
+}
+
+fn setup_player_ghost(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>
+) {
+    commands.spawn((
+            Mesh3d( meshes.add(Mesh::from(Capsule3d::new(PLAYER_BODY_RADIUS,
+                    PLAYER_BODY_LENGTH)))),
+            MeshMaterial3d( materials.add(StandardMaterial {
+                    base_color: Color::srgba(0.0,1.0,0.0,0.5),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit: true, //no light
+                    ..default()
+                })),
+            Visibility::Hidden,
+        RenderLayers::layer(1),
+        PlayerGhost{},
+        Name::new("player-ghost")
     ));
 }
 
@@ -119,30 +164,30 @@ fn update_camera_rotation_keyboard(
     match camera.mode {
         CameraMode::YawPitch => {
             if keyboard_input.pressed(camera.settings.rotate_left_key) {
-                camera.yaw += rotation_speed * time.delta_seconds();
+                camera.yaw += rotation_speed * time.delta_secs();
             }
             if keyboard_input.pressed(camera.settings.rotate_right_key) {
-                camera.yaw -= rotation_speed * time.delta_seconds();
+                camera.yaw -= rotation_speed * time.delta_secs();
             }
             if keyboard_input.pressed(camera.settings.look_up_key) {
-                camera.pitch -= rotation_speed * time.delta_seconds();
+                camera.pitch -= rotation_speed * time.delta_secs();
             }
             if keyboard_input.pressed(camera.settings.look_down_key) {
-                camera.pitch += rotation_speed * time.delta_seconds();
+                camera.pitch += rotation_speed * time.delta_secs();
             }
         }
         CameraMode::Orbit => {
             if keyboard_input.pressed(camera.settings.rotate_left_key) {
-                camera.yaw -= rotation_speed * time.delta_seconds();
+                camera.yaw -= rotation_speed * time.delta_secs();
             }
             if keyboard_input.pressed(camera.settings.rotate_right_key) {
-                camera.yaw += rotation_speed * time.delta_seconds();
+                camera.yaw += rotation_speed * time.delta_secs();
             }
             if keyboard_input.pressed(camera.settings.look_up_key) {
-                camera.settings.height_offset += rotation_speed * time.delta_seconds() * 5.0;
+                camera.settings.height_offset += rotation_speed * time.delta_secs() * 5.0;
             }
             if keyboard_input.pressed(camera.settings.look_down_key) {
-                camera.settings.height_offset -= rotation_speed * time.delta_seconds() * 5.0;
+                camera.settings.height_offset -= rotation_speed * time.delta_secs() * 5.0;
             }
         }
     }
@@ -185,9 +230,31 @@ fn update_camera_position(
     let current_pos = camera_transform.translation;
     let new_pos = current_pos.lerp(
         target_pos + offset,
-        camera.settings.smoothing_factor * time.delta_seconds()
+        camera.settings.smoothing_factor * time.delta_secs()
     );
 
     camera_transform.translation = new_pos;
     camera_transform.look_at(target_pos, Vec3::Y);
+}
+
+fn show_player_ghost(
+    player_query: Query<&Transform, (With<Player>, Without<PlayerGhost>,Without<ThirdPersonCamera>)>,
+    mut player_ghost_query: Query<(&mut Visibility, &mut Transform), (With<PlayerGhost>, Without<Player>,Without<ThirdPersonCamera>)>,
+    camery_query: Query<&Transform,(With<ThirdPersonCamera>,Without<Player>)>,
+    game_map: Res<GameMap>,
+) {
+    for player_transform in player_query.iter() {
+        for camera_transform in camery_query.iter() {
+            for (mut ghost_visibility, mut ghost_transform) in player_ghost_query.iter_mut() {
+                let grid = &game_map.grid;
+                if grid.is_wall_between(game_map.world_to_grid(player_transform.translation),
+                                        game_map.world_to_grid(camera_transform.translation)) {
+                    *ghost_transform = player_transform.clone();
+                    *ghost_visibility = Visibility::Visible;
+                } else {
+                    *ghost_visibility = Visibility::Hidden;
+                }
+            }
+        }
+    }
 }

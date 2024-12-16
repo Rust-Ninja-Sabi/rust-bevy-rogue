@@ -9,8 +9,7 @@ use crate::{GameMap, Inventory, Player, ShowFps};
 pub struct HeadUpDisplay{
     width:usize,
     height:usize,
-    text:String,
-    player_position: (usize,usize)
+    text:String
 }
 
 impl HeadUpDisplay{
@@ -24,8 +23,7 @@ impl HeadUpDisplay{
         Self{
             width,
             height,
-            text,
-            player_position
+            text
         }
     }
 }
@@ -46,11 +44,16 @@ fn update_headupdisplay(
     for (mut display,player_transform) in query_player.iter_mut() {
         let player_position = game_map.world_to_grid(player_transform.translation);
         let middle_position = (display.width / 2-1, display.height / 2-1);
-        let display_position = ( (player_position.0 - middle_position.0).max(middle_position.0) as usize ,
-                                 (player_position.1 - middle_position.1).max(middle_position.1) as usize );
-        display.player_position = (player_position.0 - display_position.0,
-                                   player_position.1 - display_position.1);
-        display.text = game_map.to_string(display_position,player_position,display.width,display.height);
+        let display_position = (
+            (player_position.0 as i32 - middle_position.0 as i32).max(middle_position.0 as i32),
+            (player_position.1 as i32 - middle_position.1 as i32).max(middle_position.1 as i32)
+        );
+
+        display.text = game_map.to_string(
+            display_position,
+            player_position,
+            display.width,display.height
+        );
     }
 }
 

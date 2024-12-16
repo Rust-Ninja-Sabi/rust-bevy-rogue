@@ -1,7 +1,7 @@
 use bevy::color::palettes::css::{LIGHT_GRAY};
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
-use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
 use bevy::input::common_conditions::input_toggle_active;
 use bevy_egui::EguiPlugin;
 use rand::Rng;
@@ -9,12 +9,12 @@ use std::f32::consts::PI;
 use bevy::utils::HashMap;
 use bimap::BiMap;
 
-
 use orbitcamera::{OrbitCameraPlugin,OrbitCamera};
 use third_person_camera::ThirdPersonCameraPlugin;
 use dungeon_lighting::{DungeonLightingPlugin,place_torch_lights};
 use crate::third_person_camera::ThirdPersonCamera;
-use crate::create_dungeon::{StringMapGenerator, DungeonGeneratorStrategy, MapGeneratorStart};
+use crate::create_dungeon::{StringMapGenerator, DungeonGeneratorStrategy,
+                            MapGeneratorStart, BresenhamLine, DungeonWriter};
 use crate::fighting::{FightingPlugin, Actor, AttackEvent, DamageEvent};
 use crate::chracter_controller::{MonsterAIPlugin,MonsterAIState};
 use crate::ui::{HeadUpDisplay, UiPlugin};
@@ -32,7 +32,11 @@ enum TileType {
     Empty,
     Wall,
     Floor,
-    Player
+    Player,
+    Potion,
+    Lightning,
+    Orc,
+    Troll
 }
 
 #[derive(Debug)]
@@ -47,6 +51,40 @@ impl TileMapping {
         mapping.insert(TileType::Floor, '.');
         mapping.insert(TileType::Player, '@');
         mapping.insert(TileType::Empty, ' ');
+        mapping.insert(TileType::Potion,  '!');
+        mapping.insert(TileType::Lightning,  '?');
+        mapping.insert(TileType::Orc, 'o');
+        mapping.insert(TileType::Troll, 'T');
+
+        /*
+        ^   A trap (known)
+        ;   A glyph of warding
+        '   An open door
+        <   A staircase up
+        >   A staircase down
+        +   A closed door
+        %   A mineral vein
+        *   A mineral vein with treasure
+        :   A pile of rubble
+        ,   A mushroom (or food)
+        -   A wand or rod
+        _   A staff
+        =   A ring
+        "   An amulet
+        $   Gold or gems
+        ~   Lights, Tools, Chests, etc
+        &   Multiple items
+        /   A pole-arm
+        |   An edged weapon
+        \   A hafted weapon
+        }   A sling, bow, or x-bow
+        {   A shot, arrow, or bolt
+        (   Soft armour
+        [   Hard armour
+        ]   Misc. armour
+        )   A shield
+        a..z, A..Z  Monster
+        */
 
         TileMapping { mapping }
     }
@@ -112,6 +150,20 @@ impl Grid {
     pub fn is_valid_position(&self, col: usize, row: usize) -> bool {
         row < self.height() && col < self.width()
     }
+
+    fn is_wall_between(&self, pos_0:(usize,usize), pos_1:(usize,usize)) -> bool {
+        let line = BresenhamLine::new(
+                                        pos_0.0 as i32,
+                                        pos_0.1 as i32,
+                                        pos_1.0 as i32,
+                                        pos_1.1 as i32,false);
+        for i in line {
+            if self[(i.0 as usize, i.1 as usize)].tile_type == TileType::Wall {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // Indexing trait for direct access
@@ -140,6 +192,13 @@ impl ItemType {
             ItemType::Lightning => String::from("Lightning")
         }
     }
+
+    fn to_tile_type(&self) -> TileType {
+        match self {
+            ItemType::HealPotion => TileType::Potion,
+            ItemType::Lightning => TileType::Lightning
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -148,10 +207,19 @@ struct ItemInMap{
     item_type: ItemType
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum MonsterType {
     Orc,
     Troll
+}
+
+impl MonsterType {
+    fn to_tile_type(&self) -> TileType {
+        match self {
+            MonsterType::Orc => TileType::Orc,
+            MonsterType::Troll => TileType::Troll
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -274,26 +342,36 @@ Compiler optimizations possible
     }
 
 
-    fn print(&self) {
-        for y in 0..self.grid.width() {
-            for x in 0..self.grid.height() {
-                let ch = self.tile_mapping.get_char(&self.grid[(x,y)].tile_type);
-                print!("{}", ch);
-            }
-            println!();
-        }
+    fn print(
+        &self,
+        player: Vec3,
+        items: Vec<(Vec3, ItemType)>,
+        monsters:Vec<(Vec3,MonsterType)>
+    ) {
+        let writer = DungeonWriter::default();
+        println!("{}", writer.write(self,player,items,monsters));
     }
 
-    fn to_string(&self,position:(usize,usize),
-                 player_position:(usize,usize),
-                 width:usize,height:usize) -> String {
+    fn to_string(
+        &self,
+        position:(i32,i32),
+        player_position:(usize,usize),
+        width:usize,height:usize
+    ) -> String {
+
         let mut parts: Vec<char> = Vec::new();
-        for y in position.1..(height+position.1) {
-            for x in position.0..(width+position.0) {
-                if player_position == (x, y) {
-                    parts.push(self.tile_mapping.get_char(&TileType::Player));
-                } else {
-                    parts.push(self.tile_mapping.get_char(&self.grid[(x,y)].tile_type));
+
+        for y in position.1 as i32..(height as i32+position.1) as i32 {
+            for x in position.0 as i32..(width as i32+position.0) as i32 {
+                if 0<=position.0 && position.0 < self.width as i32 &&
+                    0<=position.1 && position.1 < self.height as i32 {
+                    if player_position == (x as usize, y as usize) {
+                        parts.push(self.tile_mapping.get_char(&TileType::Player));
+                    } else {
+                        parts.push(self.tile_mapping.get_char(&self.grid[(x as usize, y as usize)].tile_type));
+                    }
+                }else{
+                    parts.push(' ');
                 }
             }
             parts.push('\n');
@@ -371,75 +449,68 @@ Compiler optimizations possible
                         } else {
                             //right
                             if x != self.width-1 && self.grid[(x+1,y)].tile_type == TileType::Floor {
-                                commands.spawn(SceneBundle {
-                                    scene: wall_handle.clone(),
-                                    transform:Transform {
+                                commands.spawn((
+                                    SceneRoot( wall_handle.clone()),
+                                    Transform {
                                         translation:  Vec3::new(position.x+TILE_SIZE*0.5-wall_size*0.5,0.0,position.z),
                                         rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    },
-                                    ..Default::default()
-                                });
+                                    }
+                                ));
                             }
                             //left
                             if x != 0 && self.grid[(x-1,y)].tile_type == TileType::Floor {
-                                commands.spawn(SceneBundle {
-                                    scene: wall_handle.clone(),
-                                    transform:Transform {
+                                commands.spawn((
+                                    SceneRoot( wall_handle.clone()),
+                                    Transform {
                                         translation:  Vec3::new(position.x-TILE_SIZE*0.5+wall_size*0.5,0.0,position.z),
                                         rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    },
-                                    ..Default::default()
-                                });
+                                    }
+                                ));
                             }
                             //up
                             if y != 0 && self.grid[(x,y-1)].tile_type == TileType::Floor {
-                                commands.spawn(SceneBundle {
-                                    scene: wall_handle.clone(),
-                                    transform:Transform {
+                                commands.spawn((
+                                    SceneRoot(wall_handle.clone()),
+                                    Transform {
                                         translation:  Vec3::new(position.x,0.0,position.z-TILE_SIZE*0.5+wall_size*0.5),
                                         //rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    },
-                                    ..Default::default()
-                                });
+                                    }
+                                ));
                             }
                             //down
                             if y != self.height-1 && self.grid[(x,y+1)].tile_type == TileType::Floor {
-                                commands.spawn(SceneBundle {
-                                    scene: wall_handle.clone(),
-                                    transform:Transform {
+                                commands.spawn((
+                                    SceneRoot( wall_handle.clone()),
+                                    Transform {
                                         translation:  Vec3::new(position.x,0.0,position.z+TILE_SIZE*0.5-wall_size*0.5),
                                         //rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    },
-                                    ..Default::default()
-                                });
+                                    }
+                                ));
                             }
                         }
                     },
                     TileType::Floor => {
                         let position = self.grid_to_world(x,y);
                         if abstract_mesh {
-                            commands.spawn(PbrBundle {
-                                mesh: meshes.add(Mesh::from(Cuboid::new(TILE_SIZE,0.1,TILE_SIZE))),
-                                material: materials.add(Color::Srgba(LIGHT_GRAY)),
-                                transform: Transform{
+                            commands.spawn((
+                                Mesh3d( meshes.add(Mesh::from(Cuboid::new(TILE_SIZE,0.1,TILE_SIZE)))),
+                                MeshMaterial3d(materials.add(Color::Srgba(LIGHT_GRAY))),
+                                Transform{
                                     translation: Vec3::new(position.x,-0.05,position.z),
                                     rotation: Quat::from_rotation_y(PI*0.5*rng.gen_range(1..=3)as f32),
                                     ..default()
-                                },
-                                ..default()
-                            });
+                                }
+                            ));
                         } else {
-                            let entity = commands.spawn(SceneBundle {
-                                scene: floor_handle.clone(),
-                                transform: Transform::from_xyz(position.x,-0.05,position.z),
-                                ..Default::default()
-                            }).id();
+                            commands.spawn((
+                                SceneRoot(floor_handle.clone()),
+                                Transform::from_xyz(position.x,-0.05,position.z)
+                            ));
                         }
-                        //self.grid[j][i].entities.push(entity);
                     },
                     _ => {}
                 }
@@ -457,8 +528,10 @@ struct RightArm;
 #[derive(Component)]
 struct AttackTimer(Timer);
 
-#[derive(Component)]
-struct Monster;
+#[derive(Component,Clone)]
+struct Monster{
+    monster_type: MonsterType
+}
 
 #[derive(Component)]
 struct Item{
@@ -480,7 +553,6 @@ struct MainCamera;
 
 fn main() {
     App::new()
-        .insert_resource(Msaa::Sample4)
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -517,6 +589,7 @@ fn main() {
         .add_systems(Update,player_use_item)
         .add_systems(Update,throw_ball)
         .add_systems(Update,update_thrown_ball)
+        .add_systems(Update,quit)
         .run();
 }
 
@@ -560,157 +633,137 @@ fn setup(
     commands.insert_resource(game_map);
 }
 
-fn setup_monster(commands: &mut Commands, mut meshes: &mut ResMut<Assets<Mesh>>, mut materials: &mut ResMut<Assets<StandardMaterial>>, game_map: &mut GameMap) {
+fn setup_monster(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    game_map: &mut GameMap
+) {
     for i in game_map.monsters.iter() {
 
         let position = game_map.grid_to_world(i.position.0, i.position.1);
         match i.monster_type {
             MonsterType::Troll => {
                 commands.spawn((
-                    PbrBundle {
-                        mesh: meshes.add(Mesh::from(Capsule3d::new(0.8, 1.5))), // Large, bulky troll
-                        material: materials.add(StandardMaterial { // Earthy, stone-like color
-                            base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
-                            alpha_mode: AlphaMode::Blend,
-                            ..default()
-                        }),
-                        transform: Transform::from_xyz(position.x, 0.8, position.z),
+                    Mesh3d(meshes.add(Mesh::from(Capsule3d::new(0.8, 1.5)))), // Large, bulky troll
+                    MeshMaterial3d( materials.add(StandardMaterial { // Earthy, stone-like color
+                        base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
+                        alpha_mode: AlphaMode::Blend,
                         ..default()
-                    },
-                    Monster, // Component to identify the Troll
+                    })),
+                    Transform::from_xyz(position.x, 0.8, position.z),
+                    Monster{monster_type:MonsterType::Troll}, // Component to identify the Troll
                     Actor::new(16, 1, 4),
                     MonsterAIState::Idle
                 )).insert(Name::new("troll")).with_children(|parent| {
                     // Front (rough, rocky appearance)
                     parent.spawn((
-                        PbrBundle {
-                            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4))),
-                            material: materials.add(StandardMaterial { // Earthy, stone-like color
+                                     Mesh3d( meshes.add(Mesh::from(Cuboid::new(0.4, 0.4, 0.4)))),
+                         MeshMaterial3d(materials.add(StandardMaterial { // Earthy, stone-like color
                                 base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
                                 alpha_mode: AlphaMode::Blend,
                                 ..default()
-                            }),
-                            transform: Transform::from_xyz(0.0, 0.7, -0.7),
-                            ..default()
-                        },
+                            })),
+                                     Transform::from_xyz(0.0, 0.7, -0.7)
                     )).insert(Name::new("troll-front"));
 
                     // Left Arm (massive, club-like)
-                    parent.spawn(PbrBundle {
-                        mesh: meshes.add(Mesh::from(Cuboid::new(0.5, 1.2, 0.5))), // Even larger arm
-                        material: materials.add(StandardMaterial { // Earthy, stone-like color
+                    parent.spawn((
+                        Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.5, 1.2, 0.5)))), // Even larger arm
+                        MeshMaterial3d( materials.add(StandardMaterial { // Earthy, stone-like color
                             base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
                             alpha_mode: AlphaMode::Blend,
                             ..default()
-                        }),
-                        transform: Transform::from_xyz(-1.0, 0.2, 0.0)
-                            .with_rotation(Quat::from_rotation_x(0.3)),
-                        ..default()
-                    }).insert(Name::new("troll-left-arm"));
+                        })),
+                        Transform::from_xyz(-1.0, 0.2, 0.0)
+                            .with_rotation(Quat::from_rotation_x(0.3))
+                    )).insert(Name::new("troll-left-arm"));
 
                     // Right Arm with Giant Club
                     parent.spawn((
-                        PbrBundle {
-                            mesh: meshes.add(Mesh::from(Cuboid::new(0.5, 1.2, 0.5))),
-                            material: materials.add(StandardMaterial { // Earthy, stone-like color
+                            Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.5, 1.2, 0.5)))),
+                            MeshMaterial3d( materials.add(StandardMaterial { // Earthy, stone-like color
                                 base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
                                 alpha_mode: AlphaMode::Blend,
                                 ..default()
-                            }),
-                            transform: Transform::from_xyz(1.0, 0.2, 0.0)
+                            })),
+                            Transform::from_xyz(1.0, 0.2, 0.0)
                                 .with_rotation(Quat::from_rotation_x(0.3)),
-                            ..default()
-                        },
                         RightArm,
                     )).insert(Name::new("troll-right-arm")).with_children(|arm| {
                         // Giant Club
-                        arm.spawn((
-                            PbrBundle {
-                                mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 1.5, 0.3))),
-                                material: materials.add(StandardMaterial { // Earthy, stone-like color
+                        arm.spawn(
+                            (
+                                Mesh3d( meshes.add(Mesh::from(Cuboid::new(0.3, 1.5, 0.3)))),
+                                MeshMaterial3d( materials.add(StandardMaterial { // Earthy, stone-like color
                                     base_color: Color::srgba(0.4, 0.3, 0.2, 1.0),
                                     alpha_mode: AlphaMode::Blend,
                                     ..default()
-                                }),
-                                transform: Transform::from_xyz(0.0, -1.0, -0.3)
-                                    .with_rotation(Quat::from_rotation_x(PI * 0.5)),
-                                ..default()
-                            }
-                        )).insert(Name::new("troll-sword"));
+                                })),
+                                Transform::from_xyz(0.0, -1.0, -0.3)
+                                    .with_rotation(Quat::from_rotation_x(PI * 0.5))
+                            )).insert(Name::new("troll-sword"));
                     });
                 });
             }
             _ => {
                 commands.spawn((
-                    PbrBundle {
-                        mesh: meshes.add(Mesh::from(Capsule3d::new(0.6, 1.2))), // Slightly larger and bulkier
-                        material: materials.add(StandardMaterial { // Greenish skin tone
+                        Mesh3d( meshes.add(Mesh::from(Capsule3d::new(0.6, 1.2)))), // Slightly larger and bulkier
+                        MeshMaterial3d( materials.add(StandardMaterial { // Greenish skin tone
                             base_color: Color::srgba(0.4, 0.6, 0.3, 1.0),
                             alpha_mode: AlphaMode::Blend,
                             ..default()
-                        }),
-                        transform: Transform::from_xyz(position.x, 0.8, position.z),
-                        ..default()
-                    },
-                    Monster,
+                        })),
+                        Transform::from_xyz(position.x, 0.8, position.z),
+                    Monster{monster_type: MonsterType::Troll},
                     Actor::new(10, 0, 3),
                     MonsterAIState::Idle
                 )).insert(Name::new("orc")).with_children(|parent| {
                     // Front (more brutish look)
                     parent.spawn((
-                        PbrBundle {
-                            mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 0.3, 0.3))), // Slightly larger
-                            material: materials.add(StandardMaterial { // Greenish skin tone
+                            Mesh3d( meshes.add(Mesh::from(Cuboid::new(0.3, 0.3, 0.3)))), // Slightly larger
+                            MeshMaterial3d( materials.add(StandardMaterial { // Greenish skin tone
                                 base_color: Color::srgba(0.4, 0.6, 0.3, 1.0),
                                 alpha_mode: AlphaMode::Blend,
                                 ..default()
-                            }),
-                            transform: Transform::from_xyz(0.0, 0.6, -0.6), // Adjusted position
-                            ..default()
-                        },
+                            })),
+                            Transform::from_xyz(0.0, 0.6, -0.6) // Adjusted position
                     )).insert(Name::new("orc-front"));
 
                     // Left Arm (more muscular)
-                    parent.spawn(PbrBundle {
-                        mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 1.0, 0.4))), // Thicker arm
-                        material: materials.add(StandardMaterial { // Greenish skin tone
+                    parent.spawn((
+                        Mesh3d( meshes.add(Mesh::from(Cuboid::new(0.4, 1.0, 0.4)))), // Thicker arm
+                        MeshMaterial3d( materials.add(StandardMaterial { // Greenish skin tone
                             base_color: Color::srgba(0.4, 0.6, 0.3, 1.0),
                             alpha_mode: AlphaMode::Blend,
                             ..default()
-                        }),
-                        transform: Transform::from_xyz(-0.8, 0.2, 0.0)
-                            .with_rotation(Quat::from_rotation_x(0.2)), // Slight angle
-                        ..default()
-                    }).insert(Name::new("orc-left-arm"));
+                        })),
+                        Transform::from_xyz(-0.8, 0.2, 0.0)
+                            .with_rotation(Quat::from_rotation_x(0.2)) // Slight angle
+                    )).insert(Name::new("orc-left-arm"));
 
                     // Right Arm with Battle Axe
                     parent.spawn((
-                        PbrBundle {
-                            mesh: meshes.add(Mesh::from(Cuboid::new(0.4, 1.0, 0.3))), // Muscular arm
-                            material: materials.add(StandardMaterial { // Greenish skin tone
+                            Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.4, 1.0, 0.3)))), // Muscular arm
+                            MeshMaterial3d(materials.add(StandardMaterial { // Greenish skin tone
                                 base_color: Color::srgba(0.4, 0.6, 0.3, 1.0),
                                 alpha_mode: AlphaMode::Blend,
                                 ..default()
-                            }),
-                            transform: Transform::from_xyz(0.8, 0.2, 0.0)
+                            })),
+                            Transform::from_xyz(0.8, 0.2, 0.0)
                                 .with_rotation(Quat::from_rotation_x(0.2)), // Slight angle
-                            ..default()
-                        },
                         RightArm,
                     )).insert(Name::new("orc-right-arm")).with_children(|arm| {
                         // Battle Axe replacing the sword
                         arm.spawn((
-                            PbrBundle {
-                                mesh: meshes.add(Mesh::from(Cuboid::new(0.2, 1.2, 0.3))), // Larger, brutal weapon
-                                material: materials.add(StandardMaterial {
+                                Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.2, 1.2, 0.3)))), // Larger, brutal weapon
+                                MeshMaterial3d( materials.add(StandardMaterial {
                                     base_color: Color::srgba(0.5, 0.4, 0.3, 1.0),
                                     alpha_mode: AlphaMode::Blend,
                                     ..default()
-                                }),
-                                transform: Transform::from_xyz(0.0, -0.7, -0.3)
-                                    .with_rotation(Quat::from_rotation_x(PI * 0.5)),
-                                ..default()
-                            },
+                                })),
+                               Transform::from_xyz(0.0, -0.7, -0.3)
+                                    .with_rotation(Quat::from_rotation_x(PI * 0.5))
                         )).insert(Name::new("orc-sword"));
                     });
                 });
@@ -730,11 +783,13 @@ struct Character{
     power: usize,
 }
 
+const PLAYER_BODY_RADIUS: f32 = 0.5;
+const PLAYER_BODY_LENGTH: f32 = 1.0;
 fn setup_character(
     commands: &mut Commands,
-    mut meshes: &mut ResMut<Assets<Mesh>>,
-    mut materials: &mut ResMut<Assets<StandardMaterial>>,
-    mut game_map: &mut GameMap
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    game_map: &mut GameMap
 ) {
     let mut player_position = game_map.grid_to_world(game_map.player_position.0,
                                                      game_map.player_position.1);
@@ -742,8 +797,8 @@ fn setup_character(
 
     let character = Character{
         name: String::from("player"),
-        body_radius : 0.5,
-        body_length: 1.0,
+        body_radius : PLAYER_BODY_RADIUS,
+        body_length: PLAYER_BODY_LENGTH,
         position: player_position,
         color: Color::srgb(0.2, 0.4, 0.8),
         max_hit_points:30,
@@ -752,13 +807,10 @@ fn setup_character(
     };
 
     commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Mesh::from(Capsule3d::new(character.body_radius,
-                                                       character.body_length))),
-            material: materials.add(character.color),
-            transform: Transform::from_translation(character.position),
-            ..default()
-        },
+            Mesh3d(meshes.add(Mesh::from(Capsule3d::new(character.body_radius,
+                                                       character.body_length)))),
+            MeshMaterial3d(materials.add(character.color)),
+            Transform::from_translation(character.position),
         Player,
         HeadUpDisplay::new(),
         Actor::new (character.max_hit_points, character.defense, character.power),
@@ -766,34 +818,25 @@ fn setup_character(
     )).with_children(|parent| {
         //front
         parent.spawn((
-            PbrBundle {
-                mesh: meshes.add(Mesh::from(Cuboid::new(0.25, 0.25, 0.25))),
-                material: materials.add(character.color),
-                transform: Transform::from_xyz(0.0, 0.5, -0.5),
-                ..default()
-            },
+                Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.25, 0.25, 0.25)))),
+                MeshMaterial3d(materials.add(character.color)),
+                Transform::from_xyz(0.0, 0.5, -0.5),
             Name::new("player-front")
         ));
 
         // Left Arm
         parent.spawn((
-            PbrBundle {
-                mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3))),
-                material: materials.add(character.color),
-                transform: Transform::from_xyz(-0.7, 0.2, 0.0)
+                Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3)))),
+                MeshMaterial3d(materials.add(character.color)),
+                Transform::from_xyz(-0.7, 0.2, 0.0)
                     .with_rotation(Quat::from_rotation_x(0.0)),
-                ..default()
-            },
             Name::new("player-left-arm")
         )).with_children(|arm| {
             // Wurfkugel an der linken Hand
             arm.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(Sphere::new(0.2))),
-                    material: materials.add(Color::srgb(0.8, 0.3, 0.3)), // Rote Kugel
-                    transform: Transform::from_xyz(0.0, -0.5, 0.2),
-                    ..default()
-                },
+                    Mesh3d( meshes.add(Mesh::from(Sphere::new(0.2)))),
+                    MeshMaterial3d(materials.add(Color::srgb(0.8, 0.3, 0.3))), // Rote Kugel
+                    Transform::from_xyz(0.0, -0.5, 0.2),
                 ThrowableBall,
                 Name::new("player-throwball")
             ));
@@ -801,25 +844,19 @@ fn setup_character(
 
         // Right Arm with Sword (two components)
         parent.spawn((
-            PbrBundle {
-                mesh: meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3))),
-                material: materials.add(character.color),
-                transform: Transform::from_xyz(0.7, 0.2, 0.0)
+                Mesh3d(meshes.add(Mesh::from(Cuboid::new(0.3, 0.8, 0.3)))),
+                MeshMaterial3d(materials.add(character.color)),
+                Transform::from_xyz(0.7, 0.2, 0.0)
                     .with_rotation(Quat::from_rotation_x(0.0)),
-                ..default()
-            },
             RightArm,
             Name::new("player-right-arm")
         )).with_children(|arm| {
             // Sword as a long cuboid attached to right arm
             arm.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Mesh::from(Cuboid::new(0.1, 0.8, 0.1))),
-                    material: materials.add(Color::srgb(0.6, 0.6, 0.6)),
-                    transform: Transform::from_xyz(0.0, -0.5, -0.2)
+                  Mesh3d( meshes.add(Mesh::from(Cuboid::new(0.1, 0.8, 0.1)))),
+                    MeshMaterial3d(materials.add(Color::srgb(0.6, 0.6, 0.6))),
+                    Transform::from_xyz(0.0, -0.5, -0.2)
                         .with_rotation(Quat::from_rotation_x(PI * 0.5)),
-                    ..default()
-                },
                 Name::new("player-sword")
             ));
         });
@@ -839,28 +876,24 @@ fn setup_item(
         let position = game_map.grid_to_world(i.position.0, i.position.1);
         match i.item_type {
             ItemType::HealPotion => {
-               commands.spawn((SceneBundle {
-                   scene: heal_portion_handle.clone(),
-                   transform:Transform {
+               commands.spawn((
+                   SceneRoot(heal_portion_handle.clone()),
+                   Transform {
                        translation:  Vec3::new(position.x,0.0,position.z),
                        //rotation: Quat::from_rotation_y(PI/2.0),
                        ..default()
                    },
-                   ..Default::default()
-               },
                    Item{item_type: ItemType::HealPotion}
                ));
             }
             ItemType::Lightning => {
-                commands.spawn((SceneBundle {
-                    scene: trunk_handle.clone(),
-                    transform:Transform {
-                    translation:  Vec3::new(position.x,0.0,position.z),
+                commands.spawn((
+                    SceneRoot(trunk_handle.clone()),
+                    Transform {
+                        translation:  Vec3::new(position.x,0.0,position.z),
                     //rotation: Quat::from_rotation_y(PI/2.0),
                     ..default()
-                },
-                ..Default::default()
-                },
+                    },
                     Item{item_type: ItemType::HealPotion}
                 ));
             }
@@ -871,15 +904,13 @@ fn setup_item(
 fn setup_orbitcamera(
     mut commands: Commands
 ){
-    commands.spawn(Camera3dBundle{
-        camera: Camera{
+    commands.spawn((
+        Camera3d::default(),
+        Camera{
             is_active:false,
-            order:5,
             ..default()
-        },
-        ..default()
-    }
-    )
+            }
+    ))
         .insert(OrbitCamera{
             distance : 28.0,
             ..default()
@@ -965,7 +996,7 @@ fn move_player(
                         &game_map,
                         &monster_query,
                         player_transform.translation,
-                        move_vector * time.delta_seconds() * SPEED
+                        move_vector * time.delta_secs() * SPEED
                     );
 
                     // Only rotate if the move vector is significantly different from current forward
@@ -1035,10 +1066,10 @@ fn player_without_colliding(
 fn player_item_colliding(
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
-    player_query: Query<(&Transform), (With<Player>, Changed<Transform>)>,
+    player_query: Query<&Transform, (With<Player>, Changed<Transform>)>,
     mut item_query: Query<(Entity, &Item, &Transform), (With<Item>, Without<Player>)>
 ) {
-    for (player_transform) in player_query.iter() {
+    for player_transform in player_query.iter() {
         for (item_entity, item, item_transform) in item_query.iter_mut() {
             if player_transform.translation.distance(item_transform.translation) <= PLAYER_DISTANCE *2.0 {
                 inventory.add_item(item.item_type.clone());
@@ -1094,12 +1125,9 @@ fn throw_ball(
 
                 // Spawn a new independent ball at the saved global position
                 commands.spawn((
-                    PbrBundle {
-                        mesh: meshes.add(Mesh::from(Sphere::new(BALL_RADIUS))),
-                        material: materials.add(Color::srgb(0.8, 0.3, 0.3)), // Rote Kugel
-                        transform: Transform::from_translation(start_position),
-                        ..default()
-                    },
+                        Mesh3d(meshes.add(Mesh::from(Sphere::new(BALL_RADIUS)))),
+                        MeshMaterial3d(materials.add(Color::srgb(0.8, 0.3, 0.3))), // Rote Kugel
+                        Transform::from_translation(start_position),
                     ThrownBall {
                         velocity: throw_direction * BALL_TEMPO,  // Throw velocity
                         lifetime: Timer::from_seconds(2.0, TimerMode::Once)
@@ -1116,12 +1144,12 @@ const BALL_GRAVITY: f32 = 2.40665;
 fn update_thrown_ball(
     mut commands: Commands,
     time: Res<Time>,
-    mut ball_query: Query<(Entity, &mut Transform, &mut ThrownBall),(Without<Monster>)>,
-    monster_query: Query<(Entity, &Transform), (With<Monster>)>,
+    mut ball_query: Query<(Entity, &mut Transform, &mut ThrownBall),Without<Monster>>,
+    monster_query: Query<(Entity, &Transform), With<Monster>>,
     mut damage_events: EventWriter<DamageEvent>,
     game_map: Res<GameMap>, // Game world information for collision detection
 ) {
-    let delta_time = time.delta_seconds();
+    let delta_time = time.delta_secs();
 
     for (entity, mut transform, mut ball) in ball_query.iter_mut() {
         // Update position: The ball moves in its direction with a given speed
@@ -1154,7 +1182,7 @@ fn update_thrown_ball(
 fn collide_with_monster(
     position:Vec3,
     distance:f32,
-    monster_query: &Query<(Entity, &Transform), (With<Monster>)>
+    monster_query: &Query<(Entity, &Transform), With<Monster>>
 )->Option<Entity>{
 
     for (monster,i) in monster_query.iter() {
@@ -1163,4 +1191,31 @@ fn collide_with_monster(
         }
     }
     None
+}
+
+fn quit(
+    keyboard_input:Res<ButtonInput<KeyCode>>,
+    game_map: Res<GameMap>,
+    query_player: Query<&Transform, With<Player>>,
+    query_item: Query<(&Item, &Transform), (With<Item>, Without<Player>)>,
+    query_monster: Query<(&Monster, &Transform), (With<Monster>, Without<Player>)>
+)
+{
+    if keyboard_input.just_pressed(KeyCode::KeyQ) {
+        for player in query_player.iter() {
+            let mut items: Vec<(Vec3,ItemType)> = Vec::new();
+            for (item, item_transform) in query_item.iter() {
+                items.push((item_transform.translation.clone(),item.item_type.clone()));
+            }
+            let mut monsters:Vec<(Vec3,MonsterType)> = Vec::new();
+            for (monster, monster_transform) in query_monster.iter() {
+                monsters.push((monster_transform.translation.clone(),monster.monster_type.clone()))
+            }
+            game_map.print(
+                player.translation.clone(),
+                items,
+                monsters
+            );
+        }
+    };
 }

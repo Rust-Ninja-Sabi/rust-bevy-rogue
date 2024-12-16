@@ -1,7 +1,8 @@
+use bevy::math::Vec3;
 use petgraph::graph::{Graph, NodeIndex};
 use rand::Rng;
 
-use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType};
+use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType, Item};
 
 
 
@@ -498,7 +499,7 @@ impl DungeonGeneratorStrategy for MapGeneratorThird {
 
         room_1.create_tunnel(&mut grid, &room_2);
 
-        let mut player_position: (usize, usize) = room_1.center.clone();
+        let player_position: (usize, usize) = room_1.center.clone();
 
         Ok(GameMap {
             grid,
@@ -713,7 +714,7 @@ fn add_items(grid: &Grid, rooms: &Vec<Room>,items_per_room:usize) -> Vec<ItemInM
         for _ in 0..items_per_room {
             let position = (rng.gen_range(room.x1+1..room.x2),
                             rng.gen_range(room.y1+1..room.y2));
-            let item_type = if rng.gen::<f32>() < 0.7 {
+            let item_type = if rng.gen::<f32>() < 0.6 {
                 ItemType::HealPotion
             } else {
                 ItemType::Lightning
@@ -896,3 +897,53 @@ fn remove_walls(width:usize, height:usize, grid: &mut Grid){
 
 
 */
+
+pub struct DungeonWriter{}
+
+impl Default for DungeonWriter {
+    fn default() -> Self {
+        DungeonWriter{}
+    }
+}
+impl DungeonWriter {
+    pub fn write(
+        &self, game_map: &GameMap,
+        player:Vec3,
+        items:Vec<(Vec3,ItemType)>,
+        monsters:Vec<(Vec3,MonsterType)>
+    )->String {
+
+        let mut map:Vec<Vec<char>> = vec![];
+
+        //grid
+        for y in 0..game_map.grid.height() {
+            let mut row: Vec<char> = vec![];
+            for x in 0..game_map.grid.width() {
+                let ch = game_map.tile_mapping.get_char(&game_map.grid[(x,y)].tile_type);
+                row.push(ch)
+            };
+            map.push(row);
+        }
+
+        //item
+        for (item_position, item_type) in items {
+            let item_grid = game_map.world_to_grid(item_position);
+            map[item_grid.1][item_grid.0] = game_map.tile_mapping.get_char(&item_type.to_tile_type());
+        };
+
+        //monster
+        for (monster_position, monster_type) in monsters {
+            let monster_grid = game_map.world_to_grid(monster_position);
+            map[monster_grid.1][monster_grid.0] = game_map.tile_mapping.get_char(&monster_type.to_tile_type());
+        }
+
+        //player
+        let player_grid = game_map.world_to_grid(player);
+        map[player_grid.1][player_grid.0] = game_map.tile_mapping.get_char(&TileType::Player);
+
+        map.iter()
+            .map(|row| row.iter().collect())
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+}

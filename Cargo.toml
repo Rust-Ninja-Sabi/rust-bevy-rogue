@@ -1,12 +1,15 @@
 [package]
 name = "rust-bevy-rogue"
-version = "0.1.0"
+version = "0.15.0"
 edition = "2021"
 
+[profile.dev]
+opt-level = 1
+
 [dependencies]
-bevy = "0.14"
+bevy = "0.15"
 bimap = "0.6.3"
-bevy_egui = "0.30.1"
+bevy_egui = "0.31"
 
 rand = "0.8.5"
 petgraph = "0.6"
