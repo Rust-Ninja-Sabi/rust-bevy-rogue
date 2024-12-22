@@ -2,7 +2,7 @@ use bevy::math::Vec3;
 use petgraph::graph::{Graph, NodeIndex};
 use rand::Rng;
 
-use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType, Item};
+use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType, RenderHint};
 
 
 
@@ -129,6 +129,7 @@ impl Room{
         for x in x_range {
             for y in y_range.clone() {
                 grid[(x,y)].tile_type =  TileType::Floor;
+                grid[(x,y)].render_hint =  RenderHint::RoomFloor;
             }
         }
     }
@@ -322,7 +323,7 @@ impl StringMapGenerator {
 impl DungeonGeneratorStrategy for StringMapGenerator {
      fn generate(&self) -> Result<GameMap, String> {
         let tile_mapping = TileMapping::new();
-        let lines: Vec<&str> = self.map_string.trim().split('\n').collect();
+        let lines: Vec<&str> = self.map_string.lines().collect();
 
         if lines.is_empty() {
             return Err("Empty map".to_string());
@@ -330,32 +331,40 @@ impl DungeonGeneratorStrategy for StringMapGenerator {
 
         let height = lines.len();
         let width = lines[0].len();
+         println!("height: {} width: {}", height, width);
 
-        let mut grid = Grid::new(height, width, TileType::Empty);
+        let mut grid = Grid::new(width,height,TileType::Wall);
         let mut player_position: (usize, usize) = (0,0);
+         let mut monsters:Vec<MonsterInMap>= Vec::new();
+         let mut items:Vec<ItemInMap>= Vec::new();
 
         for (y, line) in lines.iter().enumerate() {
-            let row: Vec<Tile> = line
-                .chars()
-                .enumerate()
-                .map(|(x, ch)| {
-                    let tile_type = tile_mapping.get_tile_type(ch);
-                    let tile = Tile::new(tile_type);
+            for (x, ch) in line.chars().enumerate() {
 
-                    if tile.tile_type == TileType::Player {
-                        player_position = (x, y);
-                    }
-                    tile
-                })
-                .collect();
+                println!("x: {} y: {}", x, y);
+                let tile_row = tile_mapping.get_tile_row(ch);
+                let tile = Tile::new(tile_row.tile_type);
 
-            for (x,tile) in row.iter().enumerate(){
-                grid[(x,y)] = tile.clone();
+                if tile_row.tile_type == TileType::Player {
+                    player_position = (x, y);
+                    grid[player_position] = Tile::new(TileType::Floor);
+                } else if let Some(item_type) = tile_row.item_type {
+                    items.push(ItemInMap {
+                        item_type: item_type,
+                        position: (x, y),
+                    });
+                    grid[(x, y)] = Tile::new(TileType::Floor);
+                } else if let Some(monster_type) = tile_row.monster_type {
+                    monsters.push(MonsterInMap {
+                        monster_type: monster_type,
+                        position: (x, y),
+                    });
+                    grid[(x, y)] = Tile::new(TileType::Floor);
+                } else {
+                    grid[(x, y)] = tile.clone();
+                }
             }
-
         }
-
-        grid[player_position] = Tile::new(TileType::Floor);
 
         let x_center = width / 2;
         let y_center = height / 2;
@@ -366,8 +375,8 @@ impl DungeonGeneratorStrategy for StringMapGenerator {
             grid,
             tile_mapping,
             player_position,
-            monsters: Vec::new(),
-            items: Vec::new(),
+            monsters,
+            items,
             center,
             width,
             height
@@ -610,7 +619,8 @@ pub struct MapGeneratorStart {
     room_min_size: usize,
     room_max_size: usize,
     max_monsters_per_room: usize,
-    max_items_per_room: usize
+    max_items_per_room: usize,
+    player_start_position: Option<(usize, usize)>
 }
 
 impl MapGeneratorStart {
@@ -619,7 +629,8 @@ impl MapGeneratorStart {
                room_min_size: usize,
                room_max_size: usize,
                max_monsters_per_room: usize,
-               max_items_per_room: usize) -> Self {
+               max_items_per_room: usize,
+               player_start_position: Option<(usize, usize)>) -> Self {
         MapGeneratorStart {
             width,
             height,
@@ -627,7 +638,8 @@ impl MapGeneratorStart {
             room_min_size,
             room_max_size,
             max_monsters_per_room,
-            max_items_per_room
+            max_items_per_room,
+            player_start_position
         }
     }
 }
@@ -650,11 +662,25 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
         let mut rng = rand::thread_rng();
 
         for _ in 0..self.max_rooms {
-            let room_width = rng.gen_range(self.room_min_size..=self.room_max_size);
-            let room_height = rng.gen_range(self.room_min_size..=self.room_max_size);
+            let mut room_width = rng.gen_range(self.room_min_size..=self.room_max_size);
+            let mut room_height = rng.gen_range(self.room_min_size..=self.room_max_size);
 
-            let x = rng.gen_range(0..(self.width - room_width - 1));
-            let y = rng.gen_range(0..(self.height - room_height - 1));
+            let mut x = rng.gen_range(0..(self.width - room_width - 1));
+            let mut y = rng.gen_range(0..(self.height - room_height - 1));
+
+            //player in center of first room
+            if let Some((player_x, player_y)) = self.player_start_position {
+                if rooms.len() == 0 {
+                    x = ((player_x - room_width / 2) as i32).max(0) as usize;
+                    y = ((player_y - room_height / 2) as i32).max(0) as usize;
+                    if x + room_width > self.width-1 {
+                        room_width = self.width - x - 1;
+                    }
+                    if y + room_height > self.height-1 {
+                        room_height = self.height - y - 1;
+                    }
+                }
+            }
 
             let new_room = Room::new(x, y, room_width, room_height);
 
@@ -670,8 +696,13 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
                 new_room.fill_grid(&mut grid);
 
                 if rooms.len() == 0 {
-                    // The first room, where the player starts.
-                    player_position = new_room.center.clone();
+                    // The first room, where the player starts
+
+                    player_position = if let Some((player_x, player_y)) = self.player_start_position {
+                        (player_x, player_y)
+                    } else {
+                        new_room.center.clone()
+                    };
                 } else {
                     // Dig out a tunnel between this room and the previous one.
                     new_room.create_tunnel(&mut grid, rooms.last().unwrap());
@@ -680,6 +711,10 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
                 rooms.push(new_room);
             }
         }
+
+        //add stairs to next floor
+        let stairs_position = rooms.last().unwrap().center.clone();
+        grid[stairs_position].tile_type = TileType::StaircaseDown;
 
         //add monsters
         let monsters = add_monsters(&grid, &rooms, self.max_monsters_per_room);
@@ -703,7 +738,9 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
     }
 }
 
-fn add_items(grid: &Grid, rooms: &Vec<Room>,items_per_room:usize) -> Vec<ItemInMap> {
+fn add_items(grid: &Grid,
+             rooms: &Vec<Room>,
+             items_per_room:usize) -> Vec<ItemInMap> {
     let mut items:Vec<ItemInMap> = Vec::new();
 
     let mut rng = rand::thread_rng();
@@ -712,8 +749,16 @@ fn add_items(grid: &Grid, rooms: &Vec<Room>,items_per_room:usize) -> Vec<ItemInM
     for room in rooms {
         let items_per_room = rng.gen_range(0..=items_per_room);
         for _ in 0..items_per_room {
+            loop{
+                let position = (rng.gen_range(room.x1+1..room.x2),
+                                rng.gen_range(room.y1+1..room.y2));
+                if grid[position].tile_type == TileType::Floor {
+                    break;
+                }
+            };
             let position = (rng.gen_range(room.x1+1..room.x2),
                             rng.gen_range(room.y1+1..room.y2));
+
             let item_type = if rng.gen::<f32>() < 0.6 {
                 ItemType::HealPotion
             } else {
@@ -721,7 +766,7 @@ fn add_items(grid: &Grid, rooms: &Vec<Room>,items_per_room:usize) -> Vec<ItemInM
             };
 
             items.push(ItemInMap{
-                item_type: ItemType::HealPotion,
+                item_type,
                 position
             })
         }
@@ -745,6 +790,15 @@ fn add_monsters(grid: &Grid, rooms: &Vec<Room>,max_monsters_per_room:usize) -> V
             } else {
                 MonsterType::Troll
             };
+
+            loop{
+                let position = (rng.gen_range(room.x1+1..room.x2),
+                                rng.gen_range(room.y1+1..room.y2));
+                if grid[position].tile_type == TileType::Floor {
+                    break;
+                }
+            };
+
             let position = (rng.gen_range(room.x1+1..room.x2),
                                          rng.gen_range(room.y1+1..room.y2));
             monsters.push(MonsterInMap{

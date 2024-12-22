@@ -9,6 +9,7 @@ use bevy::input::mouse::MouseScrollUnit::{Line, Pixel};
 use bevy::input::mouse::MouseWheel;
 
 use std::ops::RangeInclusive;
+use crate::GameState;
 
 const LINE_TO_PIXEL_RATIO: f32 = 0.1;
 
@@ -20,7 +21,7 @@ impl Plugin for OrbitCameraPlugin {
         app
             .add_event::<CameraEvents>()
             .add_systems( Update,(emit_motion_events, mouse_motion, emit_zoom_events,zoom,
-                                  update_transform));
+                                  update_transform).run_if(in_state(GameState::InGame)));
     }
 }
 

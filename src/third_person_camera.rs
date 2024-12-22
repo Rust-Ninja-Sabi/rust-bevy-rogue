@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
-use crate::{GameMap, Player, PLAYER_BODY_LENGTH, PLAYER_BODY_RADIUS};
+use crate::{GameMap, GameState, Player, setup, PLAYER_BODY_LENGTH, PLAYER_BODY_RADIUS};
 
 #[derive(Component, Default, Clone)]
 pub enum CameraMode {
@@ -87,13 +87,14 @@ pub struct ThirdPersonCameraPlugin;
 
 impl Plugin for ThirdPersonCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostStartup, setup_camera)
-            .add_systems(PostStartup,setup_player_ghost)
+        app.add_systems(OnEnter(GameState::InGame),
+                        (setup_camera,
+                         setup_player_ghost).after(setup))
             .add_systems(Update, (
                 update_camera_rotation_keyboard,
                 update_camera_position,
                 show_player_ghost
-            ));
+            ).run_if(in_state(GameState::InGame)));
     }
 }
 

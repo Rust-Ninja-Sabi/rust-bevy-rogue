@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use bevy::color::palettes::css::{LIGHT_GRAY};
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
@@ -6,8 +7,11 @@ use bevy::input::common_conditions::input_toggle_active;
 use bevy_egui::EguiPlugin;
 use rand::Rng;
 use std::f32::consts::PI;
-use bevy::utils::HashMap;
-use bimap::BiMap;
+use std::fs;
+use std::fs::File;
+use std::io::Write;
+use std::time::Duration;
+use serde::{Serialize, Deserialize};
 
 use orbitcamera::{OrbitCameraPlugin,OrbitCamera};
 use third_person_camera::ThirdPersonCameraPlugin;
@@ -27,11 +31,31 @@ mod fighting;
 mod chracter_controller;
 mod ui;
 
-#[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[derive(Debug, Clone, Default, Copy, Eq, PartialEq, Hash, States)]
+enum GameState {
+    #[default]
+    MainMenu,
+    InGame
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, SubStates)]
+// And we need to add an attribute to let us know what the source state is
+// and what value it needs to have. This will ensure that unless we're
+// in [`AppState::InGame`], the [`IsPaused`] state resource
+// will not exist.
+#[source(GameState = GameState::InGame)]
+enum TransitionState {
+    #[default]
+    Running,
+    StairsDown,
+}
+
+#[derive(Debug, PartialEq, Clone, Eq, Hash,Copy)]
 enum TileType {
     Empty,
     Wall,
     Floor,
+    StaircaseDown,
     Player,
     Potion,
     Lightning,
@@ -39,29 +63,38 @@ enum TileType {
     Troll
 }
 
+#[derive(Clone, Debug)]
+struct TileRow {
+    character: char,
+    tile_type: TileType,
+    item_type: Option<ItemType>,
+    monster_type: Option<MonsterType>
+}
+
 #[derive(Debug)]
 struct TileMapping {
-    mapping: BiMap<TileType, char>,
+    rows: Vec<TileRow>
 }
 
 impl TileMapping {
     fn new() -> Self {
-        let mut mapping = BiMap::new();
-        mapping.insert(TileType::Wall, '#');
-        mapping.insert(TileType::Floor, '.');
-        mapping.insert(TileType::Player, '@');
-        mapping.insert(TileType::Empty, ' ');
-        mapping.insert(TileType::Potion,  '!');
-        mapping.insert(TileType::Lightning,  '?');
-        mapping.insert(TileType::Orc, 'o');
-        mapping.insert(TileType::Troll, 'T');
+        let mut rows:Vec<TileRow > = Vec::new();
+
+        rows.push(TileRow{character: '#', tile_type: TileType::Wall, item_type: None, monster_type: None});
+        rows.push(TileRow{character: '.', tile_type: TileType::Floor, item_type: None, monster_type: None});
+        rows.push(TileRow{character: '>', tile_type: TileType::StaircaseDown, item_type: None, monster_type: None});
+        rows.push(TileRow{character: '@', tile_type: TileType::Player, item_type: None, monster_type: None});
+        rows.push(TileRow{character: '!', tile_type: TileType::Potion, item_type: Some(ItemType::HealPotion), monster_type: None});
+        rows.push(TileRow{character: '?', tile_type: TileType::Lightning, item_type: Some(ItemType::Lightning), monster_type: None});
+        rows.push(TileRow{character: 'o', tile_type: TileType::Orc, item_type: None, monster_type: Some(MonsterType::Orc)});
+        rows.push(TileRow{character: 'T', tile_type: TileType::Troll, item_type: None, monster_type: Some(MonsterType::Troll)});
+        rows.push(TileRow{character: ' ', tile_type: TileType::Empty, item_type: None, monster_type: None});
 
         /*
         ^   A trap (known)
         ;   A glyph of warding
         '   An open door
         <   A staircase up
-        >   A staircase down
         +   A closed door
         %   A mineral vein
         *   A mineral vein with treasure
@@ -86,27 +119,33 @@ impl TileMapping {
         a..z, A..Z  Monster
         */
 
-        TileMapping { mapping }
+        TileMapping { rows }
     }
 
     fn get_char(&self, tile_type: &TileType) -> char {
-        self.mapping.get_by_left(tile_type).cloned().unwrap()
+        self.rows.iter().find(|&row| row.tile_type == *tile_type).unwrap().character
+    }
+
+    fn get_tile_row(&self, character: char) -> TileRow {
+        self.rows.iter().find(|&row| row.character == character).unwrap().clone()
     }
 
     fn get_tile_type(&self, character: char) -> TileType {
-        self.mapping.get_by_right(&character).cloned().unwrap()
+        self.rows.iter().find(|&row| row.character == character).unwrap().tile_type.clone()
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Tile {
-    tile_type: TileType
+    tile_type: TileType,
+    render_hint: RenderHint
 }
 
 impl Tile {
     fn new(tile_type: TileType) -> Self {
         Tile{
-            tile_type
+            tile_type,
+            render_hint: RenderHint::Empty
         }
     }
 
@@ -120,6 +159,12 @@ const MAX_ROOMS:usize = 30;
 const MAX_MONSTERS_PER_ROOM:usize = 2;
 const MAX_ITEMS_PER_ROOM:usize = 2;
 
+#[derive(Debug, PartialEq, Clone)]
+enum RenderHint {
+    Empty,
+    RoomFloor
+}
+
 #[derive(Clone, Debug)]
 pub struct Grid {
     inner: Vec<Vec<Tile>>
@@ -128,7 +173,9 @@ pub struct Grid {
 impl Grid {
     pub fn new(width:usize, height:usize, tile_type: TileType) -> Self {
         let grid:Vec<Vec<Tile>> = vec![vec![Tile::new(tile_type); width]; height];
-        Self { inner: grid }
+        Self {
+            inner: grid
+        }
     }
 
     pub fn width(&self) -> usize {
@@ -179,7 +226,30 @@ impl std::ops::IndexMut<(usize, usize)> for Grid {
     }
 }
 
-#[derive(Debug,PartialEq,Eq, Hash, Copy, Clone)]
+#[derive(Resource)]
+struct LoadMapAndItems(bool);
+
+#[derive(Resource,Copy, Clone)]
+struct CurrentFloor(usize);
+
+impl CurrentFloor {
+    fn load(file_name: &str) -> Self {
+        let input = fs::read_to_string(file_name).expect("Unable to read file");
+        let current_floor:usize = input.parse().expect("Unable to parse floor");
+        CurrentFloor(current_floor)
+    }
+
+    fn next(&mut self) {
+        self.0 += 1;
+    }
+
+    fn save(&self) {
+        let mut file = File::create(FLOOR_JSON_FILE).expect("Unable to create file");
+        file.write_all(self.0.to_string().as_bytes()).expect("Unable to write data");
+    }
+}
+
+#[derive(Debug,PartialEq,Eq, Hash, Copy, Clone,Serialize, Deserialize)]
 enum ItemType {
     HealPotion,
     Lightning
@@ -231,7 +301,7 @@ struct MonsterInMap{
 #[derive(Debug, Resource)]
 struct ShowFps(bool);
 
-#[derive(Debug, Resource)]
+#[derive(Debug, Resource, Serialize, Deserialize)]
 struct Inventory{
     heal_potion: usize,
     items:HashMap<ItemType, usize>,
@@ -302,6 +372,18 @@ impl Inventory {
             None => "nothing active".to_string()
         }
     }
+
+    fn save(&self) {
+        let mut file = File::create(INVENTORY_JSON_FILE).expect("Unable to create file");
+        let inventory = serde_json::to_string(self).expect("Unable to serialize inventory");
+        file.write_all(inventory.as_bytes()).expect("Unable to write data");
+    }
+
+    fn load(file_name: &str) -> Self {
+        let input = fs::read_to_string(file_name).expect("Unable to read file");
+        let inventory:Inventory = serde_json::from_str(&input).expect("Unable to parse inventory");
+        inventory
+    }
 }
 
 #[derive(Debug, Resource)]
@@ -316,9 +398,20 @@ struct GameMap {
     height: usize
 }
 
+const MAP_TEXT_FILE: &'static str = "dungeon.map";
+const INVENTORY_JSON_FILE: &'static str = "inventory.json";
+const ACTOR_JSON_FILE: &'static str = "actor.json";
+const FLOOR_JSON_FILE: &'static str = "floor.json";
+
 impl GameMap {
     fn from_string(map_string: &str) -> Result<Self, String> {
         StringMapGenerator{map_string: map_string.to_string()}.generate()
+    }
+
+    fn load(file_name: &str) -> Self{
+        let input = fs::read_to_string(file_name).expect("Unable to read file");
+        let game_map = GameMap::from_string(&input).expect("Failed to parse level");
+        game_map
     }
 
     /*
@@ -352,6 +445,21 @@ Compiler optimizations possible
         println!("{}", writer.write(self,player,items,monsters));
     }
 
+    fn save(
+        &self,
+        player: Vec3,
+        items: Vec<(Vec3, ItemType)>,
+        monsters:Vec<(Vec3,MonsterType)>
+    ) {
+        let writer = DungeonWriter::default();
+
+        let map_text = writer.write(self, player, items, monsters);
+
+        let mut file = File::create(MAP_TEXT_FILE).expect("Unable to create file");
+
+        file.write_all(map_text.as_bytes()).expect("Unable to write data");
+    }
+
     fn to_string(
         &self,
         position:(i32,i32),
@@ -363,8 +471,8 @@ Compiler optimizations possible
 
         for y in position.1 as i32..(height as i32+position.1) as i32 {
             for x in position.0 as i32..(width as i32+position.0) as i32 {
-                if 0<=position.0 && position.0 < self.width as i32 &&
-                    0<=position.1 && position.1 < self.height as i32 {
+                if 0<=x && x < self.width as i32 &&
+                    0<=y && y < self.height as i32 {
                     if player_position == (x as usize, y as usize) {
                         parts.push(self.tile_mapping.get_char(&TileType::Player));
                     } else {
@@ -415,9 +523,10 @@ Compiler optimizations possible
     fn generate(
         &mut self,
         commands: &mut Commands,
-        asset_server: Res<AssetServer>,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<StandardMaterial>>,
+        current_floor: &mut ResMut<CurrentFloor>,
+        asset_server: &Res<AssetServer>,
+        mut meshes: &mut ResMut<Assets<Mesh>>,
+        mut materials: &mut ResMut<Assets<StandardMaterial>>,
     ) {
         // By default AssetServer will load assets from inside the "assets" folder.
         // For example, the next line will load GltfAssetLabel::Primitive{mesh:0,primitive:0}.from_asset("ROOT/assets/models/cube/cube.gltf"),
@@ -431,6 +540,8 @@ Compiler optimizations possible
         let wall_handle:Handle<Scene> = asset_server.load("models/wall.gltf#Scene0");
 
         let floor_handle:Handle<Scene> = asset_server.load("models/floor_dirt_large.gltf#Scene0");
+
+        let floor_room_handle:Handle<Scene> = asset_server.load("models/floor_tile_large.gltf#Scene0");
 
 
         for y in 0..self.height {
@@ -455,7 +566,8 @@ Compiler optimizations possible
                                         translation:  Vec3::new(position.x+TILE_SIZE*0.5-wall_size*0.5,0.0,position.z),
                                         rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    }
+                                    },
+                                    Floor(current_floor.0)
                                 ));
                             }
                             //left
@@ -466,7 +578,8 @@ Compiler optimizations possible
                                         translation:  Vec3::new(position.x-TILE_SIZE*0.5+wall_size*0.5,0.0,position.z),
                                         rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    }
+                                    },
+                                    Floor(current_floor.0)
                                 ));
                             }
                             //up
@@ -477,7 +590,8 @@ Compiler optimizations possible
                                         translation:  Vec3::new(position.x,0.0,position.z-TILE_SIZE*0.5+wall_size*0.5),
                                         //rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    }
+                                    },
+                                    Floor(current_floor.0)
                                 ));
                             }
                             //down
@@ -488,7 +602,8 @@ Compiler optimizations possible
                                         translation:  Vec3::new(position.x,0.0,position.z+TILE_SIZE*0.5-wall_size*0.5),
                                         //rotation: Quat::from_rotation_y(PI/2.0),
                                         ..default()
-                                    }
+                                    },
+                                    Floor(current_floor.0)
                                 ));
                             }
                         }
@@ -503,12 +618,19 @@ Compiler optimizations possible
                                     translation: Vec3::new(position.x,-0.05,position.z),
                                     rotation: Quat::from_rotation_y(PI*0.5*rng.gen_range(1..=3)as f32),
                                     ..default()
-                                }
+                                },
+                                Floor(current_floor.0)
                             ));
                         } else {
+                            let new_handle = if self.grid[(x,y)].render_hint == RenderHint::RoomFloor{
+                                floor_room_handle.clone()
+                            }else{
+                                floor_handle.clone()
+                            };
                             commands.spawn((
-                                SceneRoot(floor_handle.clone()),
-                                Transform::from_xyz(position.x,-0.05,position.z)
+                                SceneRoot(new_handle),
+                                Transform::from_xyz(position.x,-0.05,position.z),
+                                Floor(current_floor.0)
                             ));
                         }
                     },
@@ -522,6 +644,16 @@ Compiler optimizations possible
 #[derive(Component)]
 struct Player;
 
+enum TransitionStep {
+    stair_down_start,
+    stair_down_end
+}
+#[derive(Component)]
+struct PlayerTransition{
+    step: TransitionStep,
+    timer: Timer
+}
+
 #[derive(Component)]
 struct RightArm;
 
@@ -532,6 +664,9 @@ struct AttackTimer(Timer);
 struct Monster{
     monster_type: MonsterType
 }
+
+#[derive(Component)]
+struct Floor(usize);
 
 #[derive(Component)]
 struct Item{
@@ -554,6 +689,8 @@ struct MainCamera;
 fn main() {
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
+        .insert_resource(LoadMapAndItems(false))
+        .insert_resource(CurrentFloor(0))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Yet Another Roguelike Tutorial in Rust with Bevy".to_string(),
@@ -562,11 +699,17 @@ fn main() {
             }),
             ..default()
         }))
+        .init_state::<GameState>()
+        .add_sub_state::<TransitionState>()
         .add_plugins(ThirdPersonCameraPlugin)
-        .add_plugins((OrbitCameraPlugin,DungeonLightingPlugin, EguiPlugin))
-        .add_plugins(UiPlugin)
-        .add_plugins(MonsterAIPlugin)
-        .add_plugins(FightingPlugin)
+        .add_plugins((
+            OrbitCameraPlugin,
+            DungeonLightingPlugin,
+            EguiPlugin))
+        .add_plugins((
+            UiPlugin,
+            MonsterAIPlugin,
+            FightingPlugin))
         .add_plugins((
             // Adds frame time diagnostics
             FrameTimeDiagnosticsPlugin,
@@ -579,17 +722,18 @@ fn main() {
             // Uncomment this to add system info diagnostics:
             // bevy::diagnostic::SystemInformationDiagnosticsPlugin::default()
         ))
-        .add_systems(Startup, (setup_orbitcamera, setup))
-        .insert_resource(Inventory::new())
+        .add_systems(OnEnter(GameState::InGame), (setup_orbitcamera, setup))
         .insert_resource(ShowFps(false))
         //.add_systems(Startup, place_torch_lights)
-        .add_systems(Update, debug)
-        .add_systems(Update,move_player)
-        .add_systems(Update,player_item_colliding)
-        .add_systems(Update,player_use_item)
-        .add_systems(Update,throw_ball)
-        .add_systems(Update,update_thrown_ball)
-        .add_systems(Update,quit)
+        .add_systems(Update, do_transition_stairsdown.run_if(in_state(TransitionState::StairsDown)))
+        .add_systems(Update, debug.run_if(in_state(GameState::InGame)))
+        .add_systems(Update,(
+            move_player,
+            player_item_colliding,
+            player_use_item,
+            throw_ball,
+            update_thrown_ball,
+            quit).run_if(in_state(GameState::InGame)))
         .run();
 }
 
@@ -598,6 +742,8 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    load_map_and_items: Res<LoadMapAndItems>,
+    mut current_floor: ResMut<CurrentFloor>
 ) {
 
     // gamemap
@@ -609,32 +755,45 @@ fn setup(
 ....................";
 
    // let game_map = GameMap::from_string(map_string).expect("Failed to parse level");
-    let mut game_map = GameMap::create_dungeon( MapGeneratorStart::new(80,45,
-                                                                       MAX_ROOMS,
-                                                                       ROOM_MIN_SIZE,
-                                                                       ROOM_MAX_SIZE,
-                                                                       MAX_MONSTERS_PER_ROOM,
-                                                                       MAX_ITEMS_PER_ROOM) )
-                                                .expect("Failed to create level");
+    let mut game_map = if load_map_and_items.0 {
+        GameMap::load(MAP_TEXT_FILE)
+    } else {
+        GameMap::create_dungeon(MapGeneratorStart::new(80, 45,
+                                                         MAX_ROOMS,
+                                                         ROOM_MIN_SIZE,
+                                                         ROOM_MAX_SIZE,
+                                                         MAX_MONSTERS_PER_ROOM,
+                                                         MAX_ITEMS_PER_ROOM,
+                                                         None))
+            .expect("Failed to create level")
+    };
 
     //game_map.print();
 
     println!("Player position: ({}, {})", game_map.player_position.0, game_map.player_position.1);
 
-    setup_character(&mut commands, &mut meshes, &mut materials, &mut game_map);
+    if load_map_and_items.0 {
+        commands.insert_resource(Inventory::load(INVENTORY_JSON_FILE));
+        current_floor.0 = CurrentFloor::load(FLOOR_JSON_FILE).0;
+    } else {
+        commands.insert_resource(Inventory::new());
+    };
+
+    setup_character(&mut commands, &mut meshes, &mut materials, &mut game_map, &load_map_and_items);
 
     // monster
-    setup_monster(&mut commands, &mut meshes, &mut materials, &mut game_map);
+    setup_monster(&mut commands, &current_floor, &mut meshes, &mut materials, &mut game_map);
     // item
-    setup_item(&mut commands, &asset_server,&mut game_map);
+    setup_item(&mut commands, &asset_server, &current_floor, &mut game_map);
     // ground
-    game_map.generate(&mut commands, asset_server, meshes, materials);
+    game_map.generate(&mut commands, &mut current_floor, &asset_server,  &mut meshes, &mut materials);
 
     commands.insert_resource(game_map);
 }
 
 fn setup_monster(
     commands: &mut Commands,
+    current_floor: &ResMut<CurrentFloor>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     game_map: &mut GameMap
@@ -653,8 +812,9 @@ fn setup_monster(
                     })),
                     Transform::from_xyz(position.x, 0.8, position.z),
                     Monster{monster_type:MonsterType::Troll}, // Component to identify the Troll
-                    Actor::new(16, 1, 4),
-                    MonsterAIState::Idle
+                    Actor::new(16, 16,1, 4,100),
+                    MonsterAIState::Idle,
+                    Floor(current_floor.0)
                 )).insert(Name::new("troll")).with_children(|parent| {
                     // Front (rough, rocky appearance)
                     parent.spawn((
@@ -676,7 +836,8 @@ fn setup_monster(
                             ..default()
                         })),
                         Transform::from_xyz(-1.0, 0.2, 0.0)
-                            .with_rotation(Quat::from_rotation_x(0.3))
+                            .with_rotation(Quat::from_rotation_x(0.3)),
+                        Floor(current_floor.0)
                     )).insert(Name::new("troll-left-arm"));
 
                     // Right Arm with Giant Club
@@ -690,6 +851,7 @@ fn setup_monster(
                             Transform::from_xyz(1.0, 0.2, 0.0)
                                 .with_rotation(Quat::from_rotation_x(0.3)),
                         RightArm,
+                        Floor(current_floor.0)
                     )).insert(Name::new("troll-right-arm")).with_children(|arm| {
                         // Giant Club
                         arm.spawn(
@@ -701,7 +863,8 @@ fn setup_monster(
                                     ..default()
                                 })),
                                 Transform::from_xyz(0.0, -1.0, -0.3)
-                                    .with_rotation(Quat::from_rotation_x(PI * 0.5))
+                                    .with_rotation(Quat::from_rotation_x(PI * 0.5)),
+                                Floor(current_floor.0)
                             )).insert(Name::new("troll-sword"));
                     });
                 });
@@ -716,8 +879,9 @@ fn setup_monster(
                         })),
                         Transform::from_xyz(position.x, 0.8, position.z),
                     Monster{monster_type: MonsterType::Troll},
-                    Actor::new(10, 0, 3),
-                    MonsterAIState::Idle
+                    Actor::new(10,10, 0, 3,100),
+                    MonsterAIState::Idle,
+                    Floor(current_floor.0)
                 )).insert(Name::new("orc")).with_children(|parent| {
                     // Front (more brutish look)
                     parent.spawn((
@@ -727,7 +891,8 @@ fn setup_monster(
                                 alpha_mode: AlphaMode::Blend,
                                 ..default()
                             })),
-                            Transform::from_xyz(0.0, 0.6, -0.6) // Adjusted position
+                            Transform::from_xyz(0.0, 0.6, -0.6), // Adjusted position,
+                        Floor(current_floor.0)
                     )).insert(Name::new("orc-front"));
 
                     // Left Arm (more muscular)
@@ -739,7 +904,8 @@ fn setup_monster(
                             ..default()
                         })),
                         Transform::from_xyz(-0.8, 0.2, 0.0)
-                            .with_rotation(Quat::from_rotation_x(0.2)) // Slight angle
+                            .with_rotation(Quat::from_rotation_x(0.2)), // Slight angle
+                        Floor(current_floor.0)
                     )).insert(Name::new("orc-left-arm"));
 
                     // Right Arm with Battle Axe
@@ -753,6 +919,7 @@ fn setup_monster(
                             Transform::from_xyz(0.8, 0.2, 0.0)
                                 .with_rotation(Quat::from_rotation_x(0.2)), // Slight angle
                         RightArm,
+                        Floor(current_floor.0)
                     )).insert(Name::new("orc-right-arm")).with_children(|arm| {
                         // Battle Axe replacing the sword
                         arm.spawn((
@@ -763,7 +930,8 @@ fn setup_monster(
                                     ..default()
                                 })),
                                Transform::from_xyz(0.0, -0.7, -0.3)
-                                    .with_rotation(Quat::from_rotation_x(PI * 0.5))
+                                    .with_rotation(Quat::from_rotation_x(PI * 0.5)),
+                            Floor(current_floor.0)
                         )).insert(Name::new("orc-sword"));
                     });
                 });
@@ -779,6 +947,7 @@ struct Character{
     position: Vec3,
     color: Color,
     max_hit_points: usize,
+    hit_points: usize,
     defense: usize,
     power: usize,
 }
@@ -789,11 +958,25 @@ fn setup_character(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    game_map: &mut GameMap
+    game_map: &mut GameMap,
+    load_map_and_items: &Res<LoadMapAndItems>
 ) {
     let mut player_position = game_map.grid_to_world(game_map.player_position.0,
                                                      game_map.player_position.1);
     player_position.y = 0.9;
+
+    let mut max_hit_points = 30;
+    let mut hit_points = 30;
+    let mut defense = 2;
+    let mut power=5;
+
+    if load_map_and_items.0 {
+        let actor = Actor::load();
+        max_hit_points = actor.max_hit_points;
+        hit_points = actor.hit_points;
+        defense = actor.defense;
+        power = actor.power;
+    }
 
     let character = Character{
         name: String::from("player"),
@@ -801,9 +984,10 @@ fn setup_character(
         body_length: PLAYER_BODY_LENGTH,
         position: player_position,
         color: Color::srgb(0.2, 0.4, 0.8),
-        max_hit_points:30,
-        defense:2,
-        power:5
+        max_hit_points:max_hit_points,
+        hit_points:hit_points,
+        defense:defense,
+        power:power
     };
 
     commands.spawn((
@@ -813,7 +997,7 @@ fn setup_character(
             Transform::from_translation(character.position),
         Player,
         HeadUpDisplay::new(),
-        Actor::new (character.max_hit_points, character.defense, character.power),
+        Actor::new (character.max_hit_points, character.hit_points, character.defense, character.power,0),
         Name::new(character.name)
     )).with_children(|parent| {
         //front
@@ -866,6 +1050,7 @@ fn setup_character(
 fn setup_item(
     commands: &mut Commands,
     asset_server:  &Res<AssetServer>,
+    current_floor: &ResMut<CurrentFloor>,
     game_map: &mut GameMap
 ) {
     let heal_portion_handle:Handle<Scene> = asset_server.load("models/bottle_A_brown.gltf#Scene0");
@@ -883,7 +1068,8 @@ fn setup_item(
                        //rotation: Quat::from_rotation_y(PI/2.0),
                        ..default()
                    },
-                   Item{item_type: ItemType::HealPotion}
+                   Item{item_type: ItemType::HealPotion},
+                     Floor(current_floor.0)
                ));
             }
             ItemType::Lightning => {
@@ -894,7 +1080,8 @@ fn setup_item(
                     //rotation: Quat::from_rotation_y(PI/2.0),
                     ..default()
                     },
-                    Item{item_type: ItemType::HealPotion}
+                    Item{item_type: ItemType::HealPotion},
+                    Floor(current_floor.0)
                 ));
             }
         }
@@ -952,13 +1139,15 @@ fn move_camera(
 }
 
 fn move_player(
+    mut commands: Commands,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut player_query: Query<(Entity, &mut Transform), (With<Player>, Without<Monster>)>,
     mut attack_events: EventWriter<AttackEvent>,
     camera_query: Query<&Transform, (With<ThirdPersonCamera>, Without<Player>,Without<Monster>)>,
     monster_query: Query<&mut Transform, (With<Monster>, Without<Player>)>,
     game_map: Res<GameMap>,
-    time: Res<Time>
+    time: Res<Time>,
+    mut next_state: ResMut<NextState<TransitionState>>,
 ) {
         for (player_entity, mut player_transform) in player_query.iter_mut() {
             if keyboard_input.just_pressed(KeyCode::Space) {
@@ -967,49 +1156,52 @@ fn move_player(
                     direction: player_transform.forward().as_vec3()
                 });
             } else {
-            for camera_transform in camera_query.iter() {
-                let camera_forward = camera_transform.forward().as_vec3();
-                let camera_right = camera_transform.right().as_vec3();
+                for camera_transform in camera_query.iter() {
+                    let camera_forward = camera_transform.forward().as_vec3();
+                    let camera_right = camera_transform.right().as_vec3();
 
-                let mut move_vector = Vec3::ZERO;
-                if keyboard_input.pressed(KeyCode::ArrowLeft) {
-                    move_vector = Vec3::new(-camera_right.x, 0.0, -camera_right.z);
-                }
-                if keyboard_input.pressed(KeyCode::ArrowRight) {
-                    move_vector = Vec3::new(camera_right.x, 0.0, camera_right.z);
-                }
-                if keyboard_input.pressed(KeyCode::ArrowUp) {
-                    move_vector = Vec3::new(camera_forward.x, 0.0, camera_forward.z);
-                }
-                if keyboard_input.pressed(KeyCode::ArrowDown) {
-                    move_vector = Vec3::new(-camera_forward.x, 0.0, -camera_forward.z);
-                }
+                    let mut move_vector = Vec3::ZERO;
+                    if keyboard_input.pressed(KeyCode::ArrowLeft) {
+                        move_vector = Vec3::new(-camera_right.x, 0.0, -camera_right.z);
+                    }
+                    if keyboard_input.pressed(KeyCode::ArrowRight) {
+                        move_vector = Vec3::new(camera_right.x, 0.0, camera_right.z);
+                    }
+                    if keyboard_input.pressed(KeyCode::ArrowUp) {
+                        move_vector = Vec3::new(camera_forward.x, 0.0, camera_forward.z);
+                    }
+                    if keyboard_input.pressed(KeyCode::ArrowDown) {
+                        move_vector = Vec3::new(-camera_forward.x, 0.0, -camera_forward.z);
+                    }
 
-                if move_vector != Vec3::ZERO {
-                    move_vector = move_vector.normalize_or_zero();
+                    if move_vector != Vec3::ZERO {
+                        move_vector = move_vector.normalize_or_zero();
 
-                    // Store the original forward direction
-                    let original_forward = player_transform.forward().as_vec3();
+                        // Store the original forward directionmu
+                        let original_forward = player_transform.forward().as_vec3();
 
-                    // Update player position
-                    player_transform.translation = player_without_colliding(
-                        &game_map,
-                        &monster_query,
-                        player_transform.translation,
-                        move_vector * time.delta_secs() * SPEED
-                    );
-
-                    // Only rotate if the move vector is significantly different from current forward
-                    let angle = move_vector.angle_between(original_forward);
-                    if angle.abs() > 0.1 {
-                        // Calculate the rotation angle, but only rotate around Y axis
-                        let rotation = Quat::from_rotation_y(
-                            original_forward.cross(move_vector).y * angle
+                        // Update player position
+                        player_transform.translation = player_without_colliding(
+                            &mut commands,
+                            &player_entity,
+                            &game_map,
+                            &mut next_state,
+                            &monster_query,
+                            player_transform.translation,
+                            move_vector * time.delta_secs() * SPEED
                         );
-                        player_transform.rotation *= rotation;
+
+                        // Only rotate if the move vector is significantly different from current forward
+                        let angle = move_vector.angle_between(original_forward);
+                        if angle.abs() > 0.1 {
+                            // Calculate the rotation angle, but only rotate around Y axis
+                            let rotation = Quat::from_rotation_y(
+                                original_forward.cross(move_vector).y * angle
+                            );
+                            player_transform.rotation *= rotation;
+                        }
                     }
                 }
-            }
         }
     }
 }
@@ -1017,7 +1209,10 @@ fn move_player(
 const PLAYER_DISTANCE:f32=0.5;
 
 fn player_without_colliding(
+    commands: &mut Commands,
+    player: &Entity,
     game_map: &GameMap,
+    mut next_state: &mut ResMut<NextState<TransitionState>>,
     monster_query: &Query<&mut Transform, (With<Monster>, Without<Player>)>,
     position:Vec3,
     move_vector:Vec3
@@ -1025,6 +1220,22 @@ fn player_without_colliding(
 
     let new_position = position + move_vector;
 
+    //stairs down
+    let stairs_down = new_position;
+    let map_stairs_down =  game_map.world_to_grid(stairs_down);
+    if game_map.grid[map_stairs_down].tile_type == TileType::StaircaseDown {
+        if game_map.grid_to_world(map_stairs_down.0,map_stairs_down.1).distance(stairs_down) <= PLAYER_DISTANCE * 2.0 {
+            next_state.set(TransitionState::StairsDown);
+            commands.entity(*player).insert(PlayerTransition {
+                step: TransitionStep::stair_down_start,
+                timer: Timer::new(Duration::from_secs_f32(1.0), TimerMode::Once)
+            });
+            return position;
+        } else {
+            return new_position;
+        }
+
+    }
     //up
     let up = Vec3::new(0.0,0.0,-PLAYER_DISTANCE) + new_position;
     let map_up =  game_map.world_to_grid(up);
@@ -1196,13 +1407,15 @@ fn collide_with_monster(
 fn quit(
     keyboard_input:Res<ButtonInput<KeyCode>>,
     game_map: Res<GameMap>,
-    query_player: Query<&Transform, With<Player>>,
+    query_player: Query<(&Transform, &Actor), With<Player>>,
     query_item: Query<(&Item, &Transform), (With<Item>, Without<Player>)>,
-    query_monster: Query<(&Monster, &Transform), (With<Monster>, Without<Player>)>
+    query_monster: Query<(&Monster, &Transform), (With<Monster>, Without<Player>)>,
+    inventory: Res<Inventory>,
+    current_floor: Res<CurrentFloor>
 )
 {
     if keyboard_input.just_pressed(KeyCode::KeyQ) {
-        for player in query_player.iter() {
+        for (player,player_actor) in query_player.iter() {
             let mut items: Vec<(Vec3,ItemType)> = Vec::new();
             for (item, item_transform) in query_item.iter() {
                 items.push((item_transform.translation.clone(),item.item_type.clone()));
@@ -1211,11 +1424,120 @@ fn quit(
             for (monster, monster_transform) in query_monster.iter() {
                 monsters.push((monster_transform.translation.clone(),monster.monster_type.clone()))
             }
-            game_map.print(
+            game_map.save(
                 player.translation.clone(),
                 items,
                 monsters
             );
+
+            inventory.save();
+
+            player_actor.save();
+
+            current_floor.save();
+
+            std::process::exit(0);
         }
     };
+}
+
+const TRANSITION_SPEED:f32=2.0;
+
+fn do_transition_stairsdown(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut current_floor: ResMut<CurrentFloor>,
+    mut game_map: ResMut<GameMap>,
+    time: Res<Time>,
+    mut next_state: ResMut<NextState<TransitionState>>,
+    mut player_query: Query<(Entity, &mut Transform, &mut PlayerTransition), With<Player>>,
+    despawn_query: Query<Entity, (With<Floor>, Without<Player>)>,
+){
+
+    for(player_entity, mut player_transform, mut player_transition) in player_query.iter_mut() {
+        match player_transition.step {
+            TransitionStep::stair_down_start => {
+                if player_transition.timer.finished() {
+                    player_transition.step = TransitionStep::stair_down_end;
+                    player_transition.timer.set_duration(Duration::from_secs_f32(2.0));
+                    //respawn current floor
+                    despawn_current_floor(
+                        &mut commands,
+                         &despawn_query);
+                    //generate next floor
+                    current_floor.0 += 1;
+                    setup_next_floor(
+                        &mut commands,
+                        &asset_server,
+                        &mut meshes,
+                        &mut materials,
+                        &mut current_floor,
+                        &mut game_map,
+                        &mut player_transform);
+                    player_transform.translation.y = 4.0 * PLAYER_DISTANCE;
+                } else {
+                    player_transition.timer.tick(time.delta());
+                    let mut new_position = player_transform.translation.clone();
+                    new_position.y -= time.delta_secs()*TRANSITION_SPEED;
+                    player_transform.translation = new_position;
+                }
+            },
+            TransitionStep::stair_down_end => {
+                if player_transition.timer.finished() {
+                    //despawn player_transition
+                    commands.entity(player_entity).remove::<PlayerTransition>();
+                    next_state.set(TransitionState::Running);
+                } else {
+                    player_transition.timer.tick(time.delta());
+                    let mut new_position = player_transform.translation.clone();
+                    new_position.y -= time.delta_secs()*TRANSITION_SPEED;
+                    player_transform.translation = new_position;
+                    if player_transform.translation.y < 0.0 {
+                        player_transform.translation.y = 0.0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn setup_next_floor(
+    mut commands: &mut Commands,
+    asset_server: &Res<AssetServer>,
+    mut meshes: &mut ResMut<Assets<Mesh>>,
+    mut materials: &mut ResMut<Assets<StandardMaterial>>,
+    mut current_floor: &mut ResMut<CurrentFloor>,
+    mut game_map: &mut ResMut<GameMap>,
+    mut player: &mut Transform
+) {
+
+    let player_position = game_map.world_to_grid(player.translation.clone());
+    **game_map = GameMap::create_dungeon(MapGeneratorStart::new(80, 45,
+                                                       MAX_ROOMS,
+                                                       ROOM_MIN_SIZE,
+                                                       ROOM_MAX_SIZE,
+                                                       MAX_MONSTERS_PER_ROOM,
+                                                       MAX_ITEMS_PER_ROOM,
+                                                                Some(player_position)
+    ))
+            .expect("Failed to create level");
+
+    // monster
+    setup_monster(&mut commands, &current_floor, &mut meshes, &mut materials, &mut game_map);
+    // item
+    setup_item(&mut commands, &asset_server, &current_floor, &mut game_map);
+
+    // ground
+    game_map.generate(&mut commands, current_floor, asset_server,  meshes, materials);
+}
+
+fn despawn_current_floor(
+    commands: &mut Commands,
+    query: &Query<Entity, (With<Floor>,Without<Player>)>
+) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
 }

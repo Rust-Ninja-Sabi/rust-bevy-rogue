@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
-use crate::{GameMap,TileType,Player};
+use crate::{GameMap, TileType, Player, GameState, setup};
 
 // Lighting configuration constants
 const AMBIENT_INTENSITY: f32 = 0.15;
@@ -35,11 +35,15 @@ pub struct DungeonLightingPlugin;
 impl Plugin for DungeonLightingPlugin {
     fn build(&self, app: &mut App) {
         app
-            .add_systems(Startup, setup_ambient_lighting)
-            .add_systems(PostStartup, setup_player_light)
+            .add_systems(OnEnter(GameState::InGame),
+                         setup_ambient_lighting)
+            .add_systems(OnEnter(GameState::InGame),
+                         setup_player_light
+                             .after(setup))
             //.add_systems(PostStartup, place_torch_lights)
-            .add_systems(Update, torch_flickering)
-            .add_systems(Update, dynamic_light_intensity);
+            .add_systems(Update, (
+                torch_flickering,
+                dynamic_light_intensity).run_if(in_state(GameState::InGame)));
     }
 }
 

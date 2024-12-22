@@ -1,27 +1,91 @@
 use std::f32::consts::FRAC_PI_2;
+use std::fs::File;
 use bevy::prelude::*;
 use std::time::Duration;
+use std::io::Write;
 use bevy::color::palettes::css::{GRAY, LIGHT_GRAY, LIGHT_GREEN, RED};
-use crate::{AttackTimer, Player, Monster, RightArm};
+use serde::{Deserialize, Serialize};
+use crate::{AttackTimer, Player, Monster, RightArm, GameState, INVENTORY_JSON_FILE,ACTOR_JSON_FILE};
 use crate::chracter_controller::MonsterAIState;
 use crate::third_person_camera::ThirdPersonCamera;
 
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug, Clone,Serialize, Deserialize)]
 pub struct Actor {
     pub max_hit_points: usize,
     pub hit_points: usize,
     pub defense: usize,
-    pub power: usize
+    pub power: usize,
+    pub current_level: usize,
+    pub current_xp: usize,
+    pub level_up_base: usize,
+    pub level_up_factor: usize,
+    pub xp_given: usize
 }
 
+
 impl Actor {
-    pub fn new(max_hit_points: usize, defense: usize, power: usize) -> Self {
+    pub fn new(max_hit_points: usize, hit_points:usize, defense: usize, power: usize, xp_given:usize) -> Self {
         Self {
             max_hit_points,
-            hit_points: max_hit_points,
+            hit_points,
             defense,
-            power
+            power,
+            current_level: 1,
+            current_xp: 200,
+            level_up_base: 0,
+            level_up_factor: 150,
+            xp_given
+
         }
+    }
+
+    fn experience_to_next_level(&self) -> usize {
+        self.level_up_base + self.current_level * self.level_up_factor
+    }
+
+    fn requires_level_up(&self) -> bool {
+        self.current_xp > self.experience_to_next_level()
+    }
+
+    fn add_xp(&mut self, xp: usize) {
+
+        self.current_xp += xp;
+
+        if self.requires_level_up() {
+           self.increase_level();
+        }
+    }
+
+    fn increase_level(&mut self) {
+        self.current_xp -= self.experience_to_next_level();
+        self.current_level += 1;
+        self.increase_max_hp(20);
+        self.increase_power(1);
+        self.increase_defense(1);
+    }
+
+    fn increase_max_hp(&mut self, amount: usize) {
+        self.max_hit_points += amount;
+        self.hit_points += amount;
+    }
+
+    fn increase_power(&mut self, amount: usize) {
+        self.power += amount;
+    }
+
+    fn increase_defense(&mut self, amount: usize) {
+        self.defense += amount;
+    }
+
+    pub fn save(&self) {
+        let mut file = File::create(ACTOR_JSON_FILE).expect("Unable to create file");
+        let inventory = serde_json::to_string(self).expect("Unable to serialize inventory");
+        file.write_all(inventory.as_bytes()).expect("Unable to write data");
+    }
+    pub fn load() -> Self {
+        let file = File::open(ACTOR_JSON_FILE).expect("Unable to open file");
+        let actor: Actor = serde_json::from_reader(file).expect("Unable to read file");
+        actor
     }
 }
 
@@ -76,12 +140,12 @@ impl Plugin for FightingPlugin {
                 process_damage,
                 sword_rotation,
                 fade_out_monsters,
-            ).chain())
+            ).chain().run_if(in_state(GameState::InGame)))
             .add_systems(Update, (
                 update_healthbar_visibility,
                 render_healthbars,
                 update_config_gizmo
-            ).chain());
+            ).chain().run_if(in_state(GameState::InGame)));
     }
 }
 
@@ -155,7 +219,7 @@ fn sword_rotation(
 fn process_damage(
     mut damage_events: EventReader<DamageEvent>,
     mut commands: Commands,
-    player_query: Query<Entity, With<Player>>,
+    mut player_query: Query<Entity, With<Player>>,
     mut actors: Query<(Entity, &mut Actor, &Name, Option<&mut MonsterAIState>)>
 ) {
     for event in damage_events.read() {
@@ -205,6 +269,7 @@ fn process_damage(
                     commands.entity(target_entity).insert(Fading::new());
                     if let Some(ref mut ai_state) = monster_ai_state {
                         **ai_state = MonsterAIState::Fading;
+                        //player_actor.add_xp(target.xp_given);
                     } ;
                 }
             } else {
@@ -218,6 +283,8 @@ fn fade_out_monsters(
     mut commands: Commands,
     time: Res<Time>,
     mut query: Query<(Entity, &mut Fading, &mut MeshMaterial3d<StandardMaterial>), With<Monster>>,
+    mut query_player: Query<&mut Actor, (With<Player>,Without<Monster>)>,
+    mut query_monster: Query<(Entity, &Actor), With<Monster>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, mut fading, material_handle) in query.iter_mut() {
@@ -235,6 +302,10 @@ fn fade_out_monsters(
             // Monster entfernen, wenn vollständig ausgeblendet
             if fading.fade_duration.finished() {
                 commands.entity(entity).despawn_recursive();
+                for mut player_actor in query_player.iter_mut() {
+                    let Ok((_,monster_actor)) = query_monster.get(entity) else { continue };
+                    player_actor.add_xp(monster_actor.xp_given);
+                }
             }
         }
     }

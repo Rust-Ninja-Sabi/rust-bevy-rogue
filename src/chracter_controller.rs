@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::{GameMap, Player, Monster, AttackEvent, TileType};
+use crate::{GameMap, Player, Monster, AttackEvent, TileType, GameState};
 
 #[derive(Component, PartialEq, Debug, Clone, Copy)]
 pub enum MonsterAIState {
@@ -17,7 +17,7 @@ impl Plugin for MonsterAIPlugin {
             .add_systems(Update, (
                 update_monster_ai,
                 monster_movement
-            ).chain());
+            ).chain().run_if(in_state(GameState::InGame)));
     }
 }
 
