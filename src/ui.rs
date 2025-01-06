@@ -4,7 +4,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::ui::egui::Color32;
 use crate::ui::egui::pos2;
 use crate::fighting::Actor;
-use crate::{GameMap, Inventory, Player, ShowFps, GameState, MAP_TEXT_FILE, LoadMapAndItems};
+use crate::{GameMap, Inventory, Player, ShowFps, GameState, MAP_TEXT_FILE, LoadMapAndItems, ShowPlayerValuesAndInventar, CurrentFloor};
 use std::path::Path;
 
 // Komponente für das ausgewählte Menü-Item
@@ -83,8 +83,8 @@ fn main_menu(
     background_texture: Res<BackgroundTextureId>,
     mut load_map_and_items: ResMut<LoadMapAndItems>
 ) {
-    let neon_green = egui::Color32::from_rgb(57, 255, 20);
-    let light_gray = egui::Color32::from_rgb(128, 128, 128);
+    let neon_green = Color32::from_rgb(57, 255, 20);
+    let light_gray = Color32::from_rgb(128, 128, 128);
 
     // file exists
     let save_exists = Path::new(MAP_TEXT_FILE).exists();
@@ -117,7 +117,7 @@ fn main_menu(
 
     egui::CentralPanel::default()
         .frame(egui::Frame {
-            fill: egui::Color32::TRANSPARENT,
+            fill: Color32::TRANSPARENT,
             ..Default::default()
         })
         .show(egui_context.ctx_mut(), |ui| {
@@ -140,7 +140,7 @@ fn main_menu(
                     ui.add_space(ui.available_width() / 3.0);
 
                     egui::Frame {
-                        fill: egui::Color32::TRANSPARENT,
+                        fill: Color32::TRANSPARENT,
                         stroke: egui::Stroke {
                             width: if index == selected.0 { 2.0 } else { 1.0 },
                             color: if index == selected.0 {neon_green} else {light_gray}
@@ -205,11 +205,13 @@ fn render_ui(
     query_display: Query<&HeadUpDisplay>,
     query: Query<&Actor, With<Player>>,
     show_fps: ResMut<ShowFps>,
+    show_player_values_inventory: Res<ShowPlayerValuesAndInventar>,
     diagnostics: Res<DiagnosticsStore>,
-    inventory: Res<Inventory>
+    inventory: Res<Inventory>,
+    current_floor: Res<CurrentFloor>
 ) {
     if let Ok(actor) = query.get_single() {
-        let neon_green = egui::Color32::from_rgb(57, 255, 20);
+        let neon_green = Color32::from_rgb(57, 255, 20);
 
         egui::CentralPanel::default()
             .frame(egui::Frame {
@@ -219,15 +221,77 @@ fn render_ui(
             .show(egui_context.ctx_mut(), |ui| {
                 let panel_rect = ui.available_rect_before_wrap();
 
+
+                    // Character Information Panel
+                    let char_info_width = 300.0;
+                    let char_info_height = 150.0;
+                    let char_info_rect = egui::Rect {
+                        min: panel_rect.left_top() + egui::vec2(10.0, 10.0),
+                        max: panel_rect.left_top() + egui::vec2(char_info_width, char_info_height),
+                    };
+
+                if show_player_values_inventory.0 {
+                    ui.allocate_ui_at_rect(char_info_rect, |ui| {
+                        egui::Frame {
+                            fill: egui::Color32::TRANSPARENT,
+                            stroke: egui::Stroke {
+                                width: 2.0,
+                                color: neon_green,
+                            },
+                            inner_margin: egui::Margin::same(10.0),
+                            ..Default::default()
+                        }
+                            .show(ui, |ui| {
+                                ui.heading(
+                                    egui::RichText::new("Character Information")
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.add_space(5.0);
+                                let text_style = egui::TextStyle::Monospace;
+                                ui.label(
+                                    egui::RichText::new(format!("Floor: {}", current_floor.0))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("Level: {}", actor.current_level))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("XP: {}", actor.current_xp))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("XP for next Level: {}", actor.experience_to_next_level()))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("Attack: {}", actor.power))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("Defense: {}", actor.defense))
+                                        .color(neon_green)
+                                        .monospace(),
+                                );
+                            });
+                    });
+                };
+
+                // FPS Display (below character info)
                 if show_fps.0 {
                     if let Some(value) = diagnostics
                         .get(&FrameTimeDiagnosticsPlugin::FPS)
                         .and_then(|fps| fps.smoothed())
                     {
-                        // Neues FPS-Feld links oben
                         let fps_rect = egui::Rect {
-                            min: panel_rect.left_top() + egui::vec2(10.0, 10.0),
-                            max: panel_rect.left_top() + egui::vec2(120.0, 50.0),
+                            min: char_info_rect.left_bottom() + egui::vec2(0.0, 10.0),
+                            max: char_info_rect.left_bottom() + egui::vec2(120.0, 50.0),
                         };
 
                         ui.allocate_ui_at_rect(fps_rect, |ui| {
@@ -249,7 +313,8 @@ fn render_ui(
                         });
                     }
                 }
-                // Variabler Text rechts oben
+
+                // Rest of the UI components
                 if let Some(display) = query_display.iter().next() {
                     let text_size = ui.fonts(|fonts| {
                         fonts.glyph_width(&egui::TextStyle::Monospace.resolve(&ui.style()), ' ') * 20.0
@@ -280,8 +345,8 @@ fn render_ui(
                     });
                 }
 
-                // Fortschrittsanzeige
-                let progress_width = 600.0; // Increased width to accommodate labels
+                // Progress bar section
+                let progress_width = 600.0;
                 let progress_height = 80.0;
 
                 let progress_rect = egui::Rect {
@@ -291,7 +356,6 @@ fn render_ui(
 
                 ui.allocate_ui_at_rect(progress_rect, |ui| {
                     ui.horizontal(|ui| {
-                        // Inventory Label with Frame
                         egui::Frame {
                             fill: egui::Color32::TRANSPARENT,
                             stroke: egui::Stroke {
@@ -308,7 +372,6 @@ fn render_ui(
                             );
                         });
 
-                        // Active Item
                         egui::Frame {
                             fill: egui::Color32::TRANSPARENT,
                             stroke: egui::Stroke {
@@ -325,7 +388,6 @@ fn render_ui(
                             );
                         });
 
-                        // Progress Bar with Frame
                         egui::Frame {
                             fill: egui::Color32::TRANSPARENT,
                             stroke: egui::Stroke {
@@ -341,7 +403,6 @@ fn render_ui(
                             );
                         });
 
-                        // Portion Label with Frame
                         egui::Frame {
                             fill: egui::Color32::TRANSPARENT,
                             stroke: egui::Stroke {
@@ -352,13 +413,12 @@ fn render_ui(
                             ..Default::default()
                         }.show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new(format!("<P>ortion {}",inventory.heal_potion))
+                                egui::RichText::new(format!("<P>ortion {}", inventory.heal_potion))
                                     .color(neon_green)
                                     .monospace()
                             );
                         });
 
-                        // Portion Label with Frame
                         egui::Frame {
                             fill: egui::Color32::TRANSPARENT,
                             stroke: egui::Stroke {
@@ -369,7 +429,7 @@ fn render_ui(
                             ..Default::default()
                         }.show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new(format!("<Q>uit"))
+                                egui::RichText::new("<Q>uit")
                                     .color(neon_green)
                                     .monospace()
                             );

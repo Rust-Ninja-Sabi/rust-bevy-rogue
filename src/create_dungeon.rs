@@ -1,8 +1,10 @@
 use bevy::math::Vec3;
 use petgraph::graph::{Graph, NodeIndex};
+use rand::distributions::WeightedIndex;
+use rand::distributions::Distribution;
 use rand::Rng;
 
-use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType, RenderHint};
+use crate::{GameMap, TileMapping, Tile, TileType, Grid, MonsterInMap, MonsterType, ItemInMap, ItemType, RenderHint, ItemAndMonsterParameterItem, Floor};
 
 
 
@@ -86,6 +88,7 @@ impl Iterator for BresenhamLine {
 
 #[derive(Clone)]
 struct Room{
+    id: String,
     x1: usize,
     y1: usize,
     x2: usize,
@@ -94,7 +97,7 @@ struct Room{
 }
 
 impl Room{
-    fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
+    fn new(id: String, x: usize, y: usize, width: usize, height: usize) -> Self {
 
         let x1 = x;
         let y1 = y;
@@ -103,6 +106,7 @@ impl Room{
         let center = ((x1 + x2) / 2, (y1 + y2) / 2);
 
         Room{
+            id,
             x1,
             y1,
             x2,
@@ -452,8 +456,8 @@ impl DungeonGeneratorStrategy for MapGeneratorSecond {
 
         let center = (x_center, y_center);
 
-        let room_1 = Room::new(20, 15, 10, 15);
-        let room_2 = Room::new(35, 15, 10, 15);
+        let room_1 = Room::new("1".to_string(), 20, 15, 10, 15);
+        let room_2 = Room::new("2".to_string(), 35, 15, 10, 15);
 
         room_1.fill_grid(&mut grid);
         room_2.fill_grid(&mut grid);
@@ -500,8 +504,8 @@ impl DungeonGeneratorStrategy for MapGeneratorThird {
 
         let center = (x_center, y_center);
 
-        let room_1 = Room::new(20, 15, 10, 15);
-        let room_2 = Room::new(35, 15, 10, 15);
+        let room_1 = Room::new("1".to_string(), 20, 15, 10, 15);
+        let room_2 = Room::new("2".to_string(), 35, 15, 10, 15);
 
         room_1.fill_grid(&mut grid);
         room_2.fill_grid(&mut grid);
@@ -570,7 +574,7 @@ impl DungeonGeneratorStrategy for MapGeneratorStart1 {
             let x = rng.gen_range(0..(self.width - room_width - 1));
             let y = rng.gen_range(0..(self.height - room_height - 1));
 
-            let new_room = Room::new(x, y, room_width, room_height);
+            let new_room = Room::new(rooms.len().to_string(),  x, y, room_width, room_height);
 
             // Run through the other rooms and see if they intersect with this one.
             let mut intersection_found = false;
@@ -615,32 +619,118 @@ impl DungeonGeneratorStrategy for MapGeneratorStart1 {
 pub struct MapGeneratorStart {
     width: usize,
     height: usize,
+    floor: usize,
     max_rooms: usize,
     room_min_size: usize,
     room_max_size: usize,
     max_monsters_per_room: usize,
     max_items_per_room: usize,
+    item_and_monster_params: ItemAndMonsterParameterItem,
     player_start_position: Option<(usize, usize)>
 }
 
 impl MapGeneratorStart {
     pub fn new(width:usize, height:usize,
+               floor: usize,
                max_rooms: usize,
                room_min_size: usize,
                room_max_size: usize,
                max_monsters_per_room: usize,
                max_items_per_room: usize,
+               item_and_monster_params: ItemAndMonsterParameterItem,
                player_start_position: Option<(usize, usize)>) -> Self {
         MapGeneratorStart {
             width,
             height,
+            floor,
             max_rooms,
             room_min_size,
             room_max_size,
             max_monsters_per_room,
             max_items_per_room,
+            item_and_monster_params,
             player_start_position
         }
+    }
+
+    pub fn generate_floor(&self,
+                          mut grid: &mut Grid,
+                          floor: usize,
+                          start_position: Option<(usize,usize)>) -> Vec<Room> {
+
+        let mut rooms: Vec<Room> = Vec::new();
+
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..self.max_rooms {
+            let mut room_width = rng.gen_range(self.room_min_size..=self.room_max_size);
+            let mut room_height = rng.gen_range(self.room_min_size..=self.room_max_size);
+
+            let mut x = rng.gen_range(0..(self.width - room_width - 1));
+            let mut y = rng.gen_range(0..(self.height - room_height - 1));
+
+            //place in first room in start position
+            if let Some((start_x, start_y)) = start_position {
+                if rooms.len() == 0 {
+                    x = ((start_y - room_width / 2) as i32).max(0) as usize;
+                    y = ((start_y - room_height / 2) as i32).max(0) as usize;
+                    if x + room_width > self.width - 1 {
+                        room_width = self.width - x - 1;
+                    }
+                    if y + room_height > self.height - 1 {
+                        room_height = self.height - y - 1;
+                    }
+                }
+            }
+
+            let new_room = Room::new(format!("{}_{}",floor, rooms.len()+1), x, y, room_width, room_height);
+
+            // Run through the other rooms and see if they intersect with this one.
+            let mut intersection_found = false;
+            for room in rooms.iter() {
+                if room.intersects(&new_room) {
+                    intersection_found = true;
+                }
+            }
+
+            if !intersection_found {
+                new_room.fill_grid(&mut grid);
+
+                if rooms.len() == 0 {} else {
+                    // Dig out a tunnel between this room and the previous one.
+                    new_room.create_tunnel(&mut grid, rooms.last().unwrap());
+                }
+
+                rooms.push(new_room);
+            }
+        }
+        rooms
+    }
+}
+
+impl MapGeneratorStart {
+    fn generate_floors(&self, floor_count:usize)->Vec<Vec<Room>>{
+
+        let mut floors:Vec<Vec<Room>> = vec![];
+
+        for i in 0..self.floor {
+            let mut grid = Grid::new(self.width, self.height, TileType::Wall);
+
+            let x_center = self.width / 2;
+            let y_center = self.height / 2;
+
+            let center = (x_center, y_center);
+
+            let mut player_position: (usize, usize) = (0, 0);
+
+            let rooms = self.generate_floor(
+                &mut grid,
+                i,
+                self.player_start_position.clone()
+            );
+            floors.push(rooms)
+        }
+        floors
     }
 }
 
@@ -657,70 +747,33 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
 
         let mut player_position: (usize, usize) = (0, 0);
 
-        let mut rooms: Vec<Room> = Vec::new();
+        let rooms = self.generate_floor(
+            &mut grid,
+            self.floor,
+            self.player_start_position.clone()
+        );
 
-        let mut rng = rand::thread_rng();
-
-        for _ in 0..self.max_rooms {
-            let mut room_width = rng.gen_range(self.room_min_size..=self.room_max_size);
-            let mut room_height = rng.gen_range(self.room_min_size..=self.room_max_size);
-
-            let mut x = rng.gen_range(0..(self.width - room_width - 1));
-            let mut y = rng.gen_range(0..(self.height - room_height - 1));
-
-            //player in center of first room
-            if let Some((player_x, player_y)) = self.player_start_position {
-                if rooms.len() == 0 {
-                    x = ((player_x - room_width / 2) as i32).max(0) as usize;
-                    y = ((player_y - room_height / 2) as i32).max(0) as usize;
-                    if x + room_width > self.width-1 {
-                        room_width = self.width - x - 1;
-                    }
-                    if y + room_height > self.height-1 {
-                        room_height = self.height - y - 1;
-                    }
-                }
-            }
-
-            let new_room = Room::new(x, y, room_width, room_height);
-
-            // Run through the other rooms and see if they intersect with this one.
-            let mut intersection_found = false;
-            for room in rooms.iter() {
-                if room.intersects(&new_room) {
-                    intersection_found = true;
-                }
-            }
-
-            if !intersection_found {
-                new_room.fill_grid(&mut grid);
-
-                if rooms.len() == 0 {
-                    // The first room, where the player starts
-
-                    player_position = if let Some((player_x, player_y)) = self.player_start_position {
-                        (player_x, player_y)
-                    } else {
-                        new_room.center.clone()
-                    };
-                } else {
-                    // Dig out a tunnel between this room and the previous one.
-                    new_room.create_tunnel(&mut grid, rooms.last().unwrap());
-                }
-
-                rooms.push(new_room);
-            }
-        }
+        // The first room, where the player starts
+        player_position = if let Some((player_x, player_y)) = self.player_start_position {
+            (player_x, player_y)
+        } else {
+            rooms[0].center.clone()
+        };
 
         //add stairs to next floor
         let stairs_position = rooms.last().unwrap().center.clone();
         grid[stairs_position].tile_type = TileType::StaircaseDown;
 
         //add monsters
-        let monsters = add_monsters(&grid, &rooms, self.max_monsters_per_room);
+        let monsters = add_monsters(&grid, &rooms,
+                                    self.max_monsters_per_room,
+                                    &self.item_and_monster_params.monsters);
 
         //add items
-        let items = add_items(&grid, &rooms, self.max_items_per_room);
+        let items = add_items(&grid, &rooms,
+                                self.max_items_per_room,
+                                &self.item_and_monster_params.items);
+
 
         //remove walls
         remove_walls(self.width, self.height, &mut grid);
@@ -740,10 +793,14 @@ impl DungeonGeneratorStrategy for MapGeneratorStart {
 
 fn add_items(grid: &Grid,
              rooms: &Vec<Room>,
-             items_per_room:usize) -> Vec<ItemInMap> {
+             items_per_room:usize,
+             items_and_weights:&Vec<(ItemType,f32)>) -> Vec<ItemInMap> {
     let mut items:Vec<ItemInMap> = Vec::new();
 
     let mut rng = rand::thread_rng();
+
+    let (item_types, weights): (Vec<_>, Vec<_>) = items_and_weights.to_vec().into_iter().unzip();
+    let dist = WeightedIndex::new(&weights).unwrap();
 
     //For each room 0 and a maximum items
     for room in rooms {
@@ -759,11 +816,7 @@ fn add_items(grid: &Grid,
             let position = (rng.gen_range(room.x1+1..room.x2),
                             rng.gen_range(room.y1+1..room.y2));
 
-            let item_type = if rng.gen::<f32>() < 0.6 {
-                ItemType::HealPotion
-            } else {
-                ItemType::Lightning
-            };
+            let item_type = item_types[dist.sample(&mut rng)].clone();
 
             items.push(ItemInMap{
                 item_type,
@@ -774,22 +827,24 @@ fn add_items(grid: &Grid,
     items
 }
 
-fn add_monsters(grid: &Grid, rooms: &Vec<Room>,max_monsters_per_room:usize) -> Vec<MonsterInMap> {
+fn add_monsters(grid: &Grid,
+                rooms: &Vec<Room>,
+                max_monsters_per_room:usize,
+                monsters_and_weights: &Vec<(MonsterType,f32)>
+) -> Vec<MonsterInMap> {
     let mut monsters:Vec<MonsterInMap> = Vec::new();
 
     let mut rng = rand::thread_rng();
+
+    let (monster_types, weights): (Vec<_>, Vec<_>) = monsters_and_weights.to_vec().into_iter().unzip();
+    let dist = WeightedIndex::new(&weights).unwrap();
 
     //For each room 0 and a maximum monsters
     for room in rooms {
         let monsters_per_room = rng.gen_range(0..=max_monsters_per_room);
         for _ in 0..monsters_per_room {
-            // 80% Orc (a weaker enemy)
-            // 20%  a Troll
-            let monster_type: MonsterType = if rng.gen::<f32>() < 0.8 {
-                MonsterType::Orc
-            } else {
-                MonsterType::Troll
-            };
+
+            let monster_type = monster_types[dist.sample(&mut rng)].clone();
 
             loop{
                 let position = (rng.gen_range(room.x1+1..room.x2),

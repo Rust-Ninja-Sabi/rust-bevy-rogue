@@ -39,7 +39,7 @@ impl Actor {
         }
     }
 
-    fn experience_to_next_level(&self) -> usize {
+    pub fn experience_to_next_level(&self) -> usize {
         self.level_up_base + self.current_level * self.level_up_factor
     }
 
@@ -219,7 +219,7 @@ fn sword_rotation(
 fn process_damage(
     mut damage_events: EventReader<DamageEvent>,
     mut commands: Commands,
-    mut player_query: Query<Entity, With<Player>>,
+    player_query: Query<Entity, With<Player>>,
     mut actors: Query<(Entity, &mut Actor, &Name, Option<&mut MonsterAIState>)>
 ) {
     for event in damage_events.read() {
@@ -284,7 +284,7 @@ fn fade_out_monsters(
     time: Res<Time>,
     mut query: Query<(Entity, &mut Fading, &mut MeshMaterial3d<StandardMaterial>), With<Monster>>,
     mut query_player: Query<&mut Actor, (With<Player>,Without<Monster>)>,
-    mut query_monster: Query<(Entity, &Actor), With<Monster>>,
+    query_monster: Query<(Entity, &Actor), With<Monster>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (entity, mut fading, material_handle) in query.iter_mut() {

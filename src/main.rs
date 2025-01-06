@@ -3,7 +3,6 @@ use bevy::color::palettes::css::{LIGHT_GRAY};
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin};
-use bevy::input::common_conditions::input_toggle_active;
 use bevy_egui::EguiPlugin;
 use rand::Rng;
 use std::f32::consts::PI;
@@ -156,8 +155,88 @@ const TILE_SIZE: f32 = 4.0;
 const ROOM_MAX_SIZE:usize = 10;
 const ROOM_MIN_SIZE:usize = 6;
 const MAX_ROOMS:usize = 30;
-const MAX_MONSTERS_PER_ROOM:usize = 2;
-const MAX_ITEMS_PER_ROOM:usize = 2;
+
+#[derive(Debug)]
+struct FloorParameterItem{
+    max_monsters_per_room: usize,
+    max_items_per_room: usize
+}
+
+#[derive(Debug, Resource)]
+struct FloorParameters{
+    items:Vec<FloorParameterItem>
+}
+
+impl FloorParameters {
+    fn new() -> Self {
+        let mut items: Vec<FloorParameterItem> = Vec::new();
+        items.push(FloorParameterItem { max_monsters_per_room: 2, max_items_per_room: 10 });
+        items.push(FloorParameterItem { max_monsters_per_room: 2, max_items_per_room: 1 });
+        items.push(FloorParameterItem { max_monsters_per_room: 2, max_items_per_room: 1 });
+        items.push(FloorParameterItem { max_monsters_per_room: 3, max_items_per_room: 2 });
+        items.push(FloorParameterItem { max_monsters_per_room: 3, max_items_per_room: 2 });
+        items.push(FloorParameterItem { max_monsters_per_room: 5, max_items_per_room: 2 });
+        items.push(FloorParameterItem { max_monsters_per_room: 5, max_items_per_room: 2 });
+        items.push(FloorParameterItem { max_monsters_per_room: 5, max_items_per_room: 2 });
+
+        Self {
+            items
+        }
+    }
+}
+#[derive(Clone, Debug)]
+struct ItemAndMonsterParameterItem {
+    items: Vec<(ItemType,f32)>,
+    monsters: Vec<(MonsterType,f32)>
+}
+
+#[derive(Resource)]
+struct ItemAndMonsterParameters {
+    parameters: Vec<ItemAndMonsterParameterItem>
+}
+
+impl ItemAndMonsterParameters {
+    fn new()->Self{
+        let mut parameters:Vec<ItemAndMonsterParameterItem> = Vec::new();
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::Lightning,1.0)],
+            monsters: vec![(MonsterType::Orc,1.0)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.8),(ItemType::Lightning,0.2)],
+            monsters: vec![(MonsterType::Orc,0.8),(MonsterType::Troll,0.2)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.8),(ItemType::Lightning,0.2)],
+            monsters: vec![(MonsterType::Orc,0.8),(MonsterType::Troll,0.2)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.5),(ItemType::Lightning,0.5)],
+            monsters: vec![(MonsterType::Orc,0.5),(MonsterType::Troll,0.5)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.5),(ItemType::Lightning,0.5)],
+            monsters: vec![(MonsterType::Orc,0.5),(MonsterType::Troll,0.5)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.5),(ItemType::Lightning,0.5)],
+            monsters: vec![(MonsterType::Orc,0.5),(MonsterType::Troll,0.5)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.5),(ItemType::Lightning,0.5)],
+            monsters: vec![(MonsterType::Orc,0.5),(MonsterType::Troll,0.5)]
+        });
+        parameters.push(ItemAndMonsterParameterItem{
+            items: vec![(ItemType::HealPotion,0.5),(ItemType::Lightning,0.5)],
+            monsters: vec![(MonsterType::Orc,0.5),(MonsterType::Troll,0.5)]
+        });
+
+        Self {
+            parameters
+        }
+
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 enum RenderHint {
@@ -301,35 +380,33 @@ struct MonsterInMap{
 #[derive(Debug, Resource)]
 struct ShowFps(bool);
 
+#[derive(Debug, Resource)]
+struct ShowPlayerValuesAndInventar(bool);
+
 #[derive(Debug, Resource, Serialize, Deserialize)]
 struct Inventory{
     heal_potion: usize,
     items:HashMap<ItemType, usize>,
-    item_keys:Vec<ItemType>,
-    activ_item:Option<usize>
+    activ_item:Option<ItemType>
 }
 
 impl Inventory {
     fn new() -> Self {
         Inventory{
             heal_potion: 0,
-            item_keys:Vec::new(),
             items:HashMap::new(),
             activ_item: None
         }
     }
 
     fn add_item(&mut self, item_type: ItemType) {
+        println!("Item added: {:?}", item_type);
         if item_type == ItemType::HealPotion {
             self.heal_potion += 1;
         } else {
-            let item_length = self.items.len();
             *self.items.entry(item_type).or_insert(0) += 1;
-            if item_length < self.items.len() {
-                self.item_keys.push(item_type);
-                if self.activ_item == None {
-                    self.activ_item = Some(0);
-                }
+            if self.activ_item == None {
+                self.activ_item = Some(item_type);
             }
         }
     }
@@ -344,16 +421,13 @@ impl Inventory {
                     *value -= 1;
                 } else {
                     self.items.remove(&item_type);
-                    if let Some(index) = self.item_keys.iter().position(|&key| key == item_type) {
-                        self.item_keys.remove(index);
-                        if let Some(active_index) = self.activ_item {
-                            if active_index == index {
-                                if self.items.len() == 0 {
-                                    self.activ_item = None;
-                                } else {
-                                    if active_index > self.items.len()-1 {
-                                        self.activ_item = Some(0)
-                                    }
+                    if let Some(active_type) = self.activ_item {
+                        if active_type == item_type {
+                            if self.items.len() == 0 {
+                                self.activ_item = None;
+                            } else {
+                                if let Some((item_type,_)) = self.items.iter().next() {
+                                    self.activ_item = Some(*item_type);
                                 }
                             }
                         }
@@ -364,10 +438,9 @@ impl Inventory {
     }
     fn get_active_item_name(&self) -> String {
         match self.activ_item {
-            Some(value) => {
-                let item_type = self.item_keys[value];
+            Some(item_type) => {
                 let sum =  self.items[&item_type];
-                format!("{} {}", item_type.to_string(), sum)
+                format!("<X> {} {}", item_type.to_string(), sum)
             },
             None => "nothing active".to_string()
         }
@@ -525,8 +598,8 @@ Compiler optimizations possible
         commands: &mut Commands,
         current_floor: &mut ResMut<CurrentFloor>,
         asset_server: &Res<AssetServer>,
-        mut meshes: &mut ResMut<Assets<Mesh>>,
-        mut materials: &mut ResMut<Assets<StandardMaterial>>,
+        meshes: &mut ResMut<Assets<Mesh>>,
+        materials: &mut ResMut<Assets<StandardMaterial>>,
     ) {
         // By default AssetServer will load assets from inside the "assets" folder.
         // For example, the next line will load GltfAssetLabel::Primitive{mesh:0,primitive:0}.from_asset("ROOT/assets/models/cube/cube.gltf"),
@@ -645,8 +718,8 @@ Compiler optimizations possible
 struct Player;
 
 enum TransitionStep {
-    stair_down_start,
-    stair_down_end
+    StairDownStart,
+    StairDownEnd
 }
 #[derive(Component)]
 struct PlayerTransition{
@@ -681,6 +754,7 @@ struct ThrowableBall;
 struct ThrownBall {
     velocity: Vec3,
     lifetime: Timer,
+    item_type: ItemType
 }
 
 #[derive(Component)]
@@ -691,6 +765,8 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(LoadMapAndItems(false))
         .insert_resource(CurrentFloor(0))
+        .insert_resource(FloorParameters::new())
+        .insert_resource(ItemAndMonsterParameters::new())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Yet Another Roguelike Tutorial in Rust with Bevy".to_string(),
@@ -724,6 +800,7 @@ fn main() {
         ))
         .add_systems(OnEnter(GameState::InGame), (setup_orbitcamera, setup))
         .insert_resource(ShowFps(false))
+        .insert_resource(ShowPlayerValuesAndInventar(false))
         //.add_systems(Startup, place_torch_lights)
         .add_systems(Update, do_transition_stairsdown.run_if(in_state(TransitionState::StairsDown)))
         .add_systems(Update, debug.run_if(in_state(GameState::InGame)))
@@ -743,27 +820,22 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     load_map_and_items: Res<LoadMapAndItems>,
-    mut current_floor: ResMut<CurrentFloor>
+    mut current_floor: ResMut<CurrentFloor>,
+    floor_parameters: Res<FloorParameters>,
+    item_and_monster_parameters: Res<ItemAndMonsterParameters>
 ) {
-
-    // gamemap
-    let map_string = "....................
-.........####.......
-....................
-..........@.........
-....................
-....................";
-
    // let game_map = GameMap::from_string(map_string).expect("Failed to parse level");
     let mut game_map = if load_map_and_items.0 {
         GameMap::load(MAP_TEXT_FILE)
     } else {
         GameMap::create_dungeon(MapGeneratorStart::new(80, 45,
+                                                         current_floor.0,
                                                          MAX_ROOMS,
                                                          ROOM_MIN_SIZE,
                                                          ROOM_MAX_SIZE,
-                                                         MAX_MONSTERS_PER_ROOM,
-                                                         MAX_ITEMS_PER_ROOM,
+                                                         floor_parameters.items[current_floor.0].max_monsters_per_room,
+                                                         floor_parameters.items[current_floor.0].max_items_per_room,
+                                                         item_and_monster_parameters.parameters[current_floor.0].clone(),
                                                          None))
             .expect("Failed to create level")
     };
@@ -984,10 +1056,10 @@ fn setup_character(
         body_length: PLAYER_BODY_LENGTH,
         position: player_position,
         color: Color::srgb(0.2, 0.4, 0.8),
-        max_hit_points:max_hit_points,
-        hit_points:hit_points,
-        defense:defense,
-        power:power
+        max_hit_points,
+        hit_points,
+        defense,
+        power
     };
 
     commands.spawn((
@@ -1018,10 +1090,11 @@ fn setup_character(
         )).with_children(|arm| {
             // Wurfkugel an der linken Hand
             arm.spawn((
-                    Mesh3d( meshes.add(Mesh::from(Sphere::new(0.2)))),
-                    MeshMaterial3d(materials.add(Color::srgb(0.8, 0.3, 0.3))), // Rote Kugel
-                    Transform::from_xyz(0.0, -0.5, 0.2),
+                Mesh3d( meshes.add(Mesh::from(Sphere::new(0.2)))),
+                MeshMaterial3d(materials.add(Color::srgb(0.8, 0.3, 0.3))), // Rote Kugel
+                Transform::from_xyz(0.0, -0.5, 0.2),
                 ThrowableBall,
+                Visibility::Hidden,
                 Name::new("player-throwball")
             ));
         });
@@ -1080,7 +1153,7 @@ fn setup_item(
                     //rotation: Quat::from_rotation_y(PI/2.0),
                     ..default()
                     },
-                    Item{item_type: ItemType::HealPotion},
+                    Item{item_type: ItemType::Lightning},
                     Floor(current_floor.0)
                 ));
             }
@@ -1108,6 +1181,7 @@ fn setup_orbitcamera(
 fn debug(
     keyboard_input:Res<ButtonInput<KeyCode>>,
     mut show_fps: ResMut<ShowFps>,
+    mut show_player_values_and_inventar: ResMut<ShowPlayerValuesAndInventar>,
     mut query: Query<&mut Camera>
 )
 {
@@ -1117,7 +1191,9 @@ fn debug(
         }
     } else if keyboard_input.just_pressed(KeyCode::KeyF) {
         show_fps.0 = !show_fps.0;
-    };
+    } else if keyboard_input.just_pressed(KeyCode::KeyI) {
+        show_player_values_and_inventar.0 = !show_player_values_and_inventar.0;
+    }
 }
 
 
@@ -1212,7 +1288,7 @@ fn player_without_colliding(
     commands: &mut Commands,
     player: &Entity,
     game_map: &GameMap,
-    mut next_state: &mut ResMut<NextState<TransitionState>>,
+    next_state: &mut ResMut<NextState<TransitionState>>,
     monster_query: &Query<&mut Transform, (With<Monster>, Without<Player>)>,
     position:Vec3,
     move_vector:Vec3
@@ -1227,7 +1303,7 @@ fn player_without_colliding(
         if game_map.grid_to_world(map_stairs_down.0,map_stairs_down.1).distance(stairs_down) <= PLAYER_DISTANCE * 2.0 {
             next_state.set(TransitionState::StairsDown);
             commands.entity(*player).insert(PlayerTransition {
-                step: TransitionStep::stair_down_start,
+                step: TransitionStep::StairDownStart,
                 timer: Timer::new(Duration::from_secs_f32(1.0), TimerMode::Once)
             });
             return position;
@@ -1278,12 +1354,18 @@ fn player_item_colliding(
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
     player_query: Query<&Transform, (With<Player>, Changed<Transform>)>,
+    mut throwball_query: Query<&mut Visibility, (With<ThrowableBall>, Without<ThrownBall>)>,
     mut item_query: Query<(Entity, &Item, &Transform), (With<Item>, Without<Player>)>
 ) {
     for player_transform in player_query.iter() {
         for (item_entity, item, item_transform) in item_query.iter_mut() {
             if player_transform.translation.distance(item_transform.translation) <= PLAYER_DISTANCE *2.0 {
                 inventory.add_item(item.item_type.clone());
+                if item.item_type == ItemType::Lightning {
+                    if let Ok(mut ball_visibility) = throwball_query.get_single_mut() {
+                        *ball_visibility = Visibility::Visible;
+                    }
+                }
                 commands.entity(item_entity).despawn_recursive();
             }
         }
@@ -1316,13 +1398,14 @@ fn throw_ball(
     mut commands: Commands,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     player_query: Query<&Transform, (With<Player>, Without<ThrownBall>)>,
-    throwball_query: Query<(Entity, &GlobalTransform), (With<ThrowableBall>, Without<ThrownBall>)>,
+    mut throwball_query: Query<(&mut Visibility, &GlobalTransform), (With<ThrowableBall>, Without<ThrownBall>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut inventory: ResMut<Inventory>
 ) {
     if keyboard_input.just_pressed(KeyCode::KeyX) {
         if let Ok(player_transform) = player_query.get_single() {
-            if let Ok((ball_entity, ball_global_transform)) = throwball_query.get_single() {
+            if let Ok((mut ball_visibility, ball_global_transform)) = throwball_query.get_single_mut() {
 
                 // Determine throw direction based on player orientation
                 let mut throw_direction = player_transform.forward().as_vec3().normalize();
@@ -1332,18 +1415,22 @@ fn throw_ball(
                 let start_position = ball_global_transform.translation();
 
                 // Remove the ball from the player
-                commands.entity(ball_entity).despawn_recursive();
+                *ball_visibility = Visibility::Hidden;
 
                 // Spawn a new independent ball at the saved global position
-                commands.spawn((
+                if let Some(active_item) = inventory.activ_item {
+                    commands.spawn((
                         Mesh3d(meshes.add(Mesh::from(Sphere::new(BALL_RADIUS)))),
                         MeshMaterial3d(materials.add(Color::srgb(0.8, 0.3, 0.3))), // Rote Kugel
                         Transform::from_translation(start_position),
-                    ThrownBall {
-                        velocity: throw_direction * BALL_TEMPO,  // Throw velocity
-                        lifetime: Timer::from_seconds(2.0, TimerMode::Once)
-                    }
-                ));
+                        ThrownBall {
+                            velocity: throw_direction * BALL_TEMPO,  // Throw velocity
+                            lifetime: Timer::from_seconds(2.0, TimerMode::Once),
+                            item_type: active_item
+                        }
+                    ));
+                    inventory.remove_item(active_item);
+                }
             }
         }
     }
@@ -1370,7 +1457,7 @@ fn update_thrown_ball(
         // Reduce the lifetime of the ball
         ball.lifetime.tick(time.delta());
         if ball.lifetime.finished() {
-            commands.entity(entity).despawn(); // Remove the ball when its lifetime expires
+            remove_ball(&mut commands, entity);
             continue;
         }
 
@@ -1385,9 +1472,16 @@ fn update_thrown_ball(
                 target: monster,
                 fixed_damage: 10
             });
-            commands.entity(entity).despawn_recursive();
+            remove_ball(&mut commands, entity);
         }
     }
+}
+
+fn remove_ball(
+    commands: &mut Commands,
+    entity: Entity
+) {
+    commands.entity(entity).despawn();
 }
 
 fn collide_with_monster(
@@ -1449,6 +1543,8 @@ fn do_transition_stairsdown(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut current_floor: ResMut<CurrentFloor>,
+    floor_parameters: Res<FloorParameters>,
+    item_and_monster_parameters: Res<ItemAndMonsterParameters>,
     mut game_map: ResMut<GameMap>,
     time: Res<Time>,
     mut next_state: ResMut<NextState<TransitionState>>,
@@ -1458,9 +1554,9 @@ fn do_transition_stairsdown(
 
     for(player_entity, mut player_transform, mut player_transition) in player_query.iter_mut() {
         match player_transition.step {
-            TransitionStep::stair_down_start => {
+            TransitionStep::StairDownStart => {
                 if player_transition.timer.finished() {
-                    player_transition.step = TransitionStep::stair_down_end;
+                    player_transition.step = TransitionStep::StairDownEnd;
                     player_transition.timer.set_duration(Duration::from_secs_f32(2.0));
                     //respawn current floor
                     despawn_current_floor(
@@ -1474,6 +1570,8 @@ fn do_transition_stairsdown(
                         &mut meshes,
                         &mut materials,
                         &mut current_floor,
+                        &floor_parameters,
+                        &item_and_monster_parameters,
                         &mut game_map,
                         &mut player_transform);
                     player_transform.translation.y = 4.0 * PLAYER_DISTANCE;
@@ -1484,7 +1582,7 @@ fn do_transition_stairsdown(
                     player_transform.translation = new_position;
                 }
             },
-            TransitionStep::stair_down_end => {
+            TransitionStep::StairDownEnd => {
                 if player_transition.timer.finished() {
                     //despawn player_transition
                     commands.entity(player_entity).remove::<PlayerTransition>();
@@ -1508,18 +1606,22 @@ fn setup_next_floor(
     asset_server: &Res<AssetServer>,
     mut meshes: &mut ResMut<Assets<Mesh>>,
     mut materials: &mut ResMut<Assets<StandardMaterial>>,
-    mut current_floor: &mut ResMut<CurrentFloor>,
+    current_floor: &mut ResMut<CurrentFloor>,
+    floor_parameters: &Res<FloorParameters>,
+    item_and_monster_parameters: &Res<ItemAndMonsterParameters>,
     mut game_map: &mut ResMut<GameMap>,
-    mut player: &mut Transform
+    player: &mut Transform
 ) {
 
     let player_position = game_map.world_to_grid(player.translation.clone());
     **game_map = GameMap::create_dungeon(MapGeneratorStart::new(80, 45,
+                                                                current_floor.0,
                                                        MAX_ROOMS,
                                                        ROOM_MIN_SIZE,
                                                        ROOM_MAX_SIZE,
-                                                       MAX_MONSTERS_PER_ROOM,
-                                                       MAX_ITEMS_PER_ROOM,
+                                                         floor_parameters.items[current_floor.0].max_monsters_per_room,
+                                                            floor_parameters.items[current_floor.0].max_items_per_room,
+                                                                item_and_monster_parameters.parameters[current_floor.0].clone(),
                                                                 Some(player_position)
     ))
             .expect("Failed to create level");
